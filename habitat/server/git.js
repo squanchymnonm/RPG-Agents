@@ -4,7 +4,9 @@ import {
   readdir as fsReaddir, stat as fsStat,
   access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename, relative, sep } from 'node:path';
+import { realpath as fsRealpath } from 'node:fs/promises';
+import { resolveWithinRoot } from './files.js';
 
 const run = promisify(execFile);
 const defaultExec = async (file, args) => (await run(file, args)).stdout;
@@ -167,6 +169,29 @@ export async function containerWorktreeAdd(projectDir, branch, wtPath, nested, e
   return true;
 }
 
+// Traduce (cwd de la sesión, path relativo) al repo git que contiene ese path.
+// Único punto de verdad del scope de repo: lo usan todos los endpoints git.
+// Dos guards en capas: resolveWithinRoot es sintáctico (path traversal), y la
+// comparación de realpaths cubre symlinks que apunten a un repo de afuera
+// (--show-toplevel no garantiza forma canónica, así que se realpathean ambos).
+export async function resolveRepo(cwd, rel, deps = {}, exec = defaultExec) {
+  const realpath = deps.realpath || fsRealpath;
+  const target = resolveWithinRoot(cwd, rel);
+  if (!target) return null;
+  let top;
+  try {
+    top = String(await exec('git', ['-C', target, 'rev-parse', '--show-toplevel'])).trim();
+  } catch {
+    return null; // no es repo git (o el path no existe)
+  }
+  if (!top) return null;
+  let realTop, realRoot;
+  try { realTop = await realpath(top); realRoot = await realpath(cwd); }
+  catch { return null; }
+  if (realTop !== realRoot && !realTop.startsWith(realRoot + sep)) return null;
+  return { dir: top, rel: relative(realRoot, realTop), name: basename(top) };
+}
+
 // Asegura que el contenedor sea un repo git que versiona lo no-git de la raíz (.claude, docs, …).
 // Idempotente. El .gitignore excluye cada sub-repo para que el worktree del padre no intente
 // materializarlos (ahí van los worktrees de los hijos). Commit con identidad explícita para no
@@ -204,3 +229,5 @@ export async function ensureContainerRepo(dir, nested, exec = defaultExec, deps 
     return false;
   }
 }
+
+export { defaultExec };

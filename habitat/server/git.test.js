@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validBranch, branchExists, worktreeAdd, worktreeRemove, findNestedRepos,
-  currentBranch, remoteDefaultBranch, ensureContainerRepo, containerWorktreeAdd,
+  currentBranch, remoteDefaultBranch, ensureContainerRepo, containerWorktreeAdd, resolveRepo,
 } from './git.js';
 
 test('validBranch acepta nombres seguros y rechaza inválidos', () => {
@@ -332,4 +332,51 @@ test('containerWorktreeAdd devuelve false si ensureContainerRepo falla', async (
   const deps = { access: async () => { throw new Error('no .git'); }, readFile: async () => '', writeFile: async () => {} };
   const ok = await containerWorktreeAdd('/proj', 'f', '/wt/p/f', ['back'], exec, deps);
   assert.equal(ok, false);
+});
+
+test('resolveRepo devuelve el repo del subdirectorio', async () => {
+  const exec = async (file, args) => {
+    assert.deepEqual(args, ['-C', '/wt/link/back/src', 'rev-parse', '--show-toplevel']);
+    return '/wt/link/back\n';
+  };
+  const realpath = async (p) => p;
+  const r = await resolveRepo('/wt/link', 'back/src', { realpath }, exec);
+  assert.deepEqual(r, { dir: '/wt/link/back', rel: 'back', name: 'back' });
+});
+
+test('resolveRepo con rel vacío devuelve el propio cwd', async () => {
+  const exec = async () => '/wt/link\n';
+  const realpath = async (p) => p;
+  const r = await resolveRepo('/wt/link', '', { realpath }, exec);
+  assert.deepEqual(r, { dir: '/wt/link', rel: '', name: 'link' });
+});
+
+test('resolveRepo rechaza path que escapa del cwd', async () => {
+  let called = false;
+  const exec = async () => { called = true; return ''; };
+  const r = await resolveRepo('/wt/link', '../otro', {}, exec);
+  assert.equal(r, null);
+  assert.equal(called, false); // ni siquiera invoca git
+});
+
+test('resolveRepo rechaza toplevel fuera del cwd (symlink)', async () => {
+  // El path resuelve sintácticamente dentro, pero el repo real vive afuera.
+  const exec = async () => '/otro/repo\n';
+  const realpath = async (p) => (p === '/wt/link/enlace' ? '/otro/repo' : p);
+  const r = await resolveRepo('/wt/link', 'enlace', { realpath }, exec);
+  assert.equal(r, null);
+});
+
+test('resolveRepo devuelve null si no hay repo git', async () => {
+  const exec = async () => { throw new Error('not a git repository'); };
+  const realpath = async (p) => p;
+  const r = await resolveRepo('/tmp/vacio', '', { realpath }, exec);
+  assert.equal(r, null);
+});
+
+test('resolveRepo devuelve null si realpath falla (path inexistente)', async () => {
+  const exec = async () => '/wt/link\n';
+  const realpath = async () => { throw new Error('ENOENT'); };
+  const r = await resolveRepo('/wt/link', 'no-existe', { realpath }, exec);
+  assert.equal(r, null);
 });
