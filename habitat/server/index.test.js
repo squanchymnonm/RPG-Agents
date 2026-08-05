@@ -1355,3 +1355,24 @@ test('GET /file devuelve texto, binario y tooLarge', async () => {
   server.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('GET /tree marca isRepo en carpetas que son repos, no en .git', async () => {
+  const { dir } = tmpRepo();
+  mkdirSync(join(dir, 'back'));
+  mkdirSync(join(dir, 'back', '.git'));
+  mkdirSync(join(dir, 'docs'));
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/tree?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  const body = await res.json();
+  const byName = Object.fromEntries(body.entries.map((e) => [e.name, e]));
+  assert.equal(byName.back.isRepo, true);
+  assert.equal(byName.docs.isRepo, false);
+  assert.equal(byName['.git'].isRepo, false); // el .git del repo raíz no se marca
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});

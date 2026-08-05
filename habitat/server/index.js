@@ -298,7 +298,12 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
         const abs = join(realTarget, d.name);
         let size = 0;
         if (!d.isDirectory()) { try { size = (await stat(abs)).size; } catch { size = 0; } }
-        entries.push({ name: d.name, rel: relative(realRoot, abs), isDir: d.isDirectory(), size });
+        // isRepo: subcarpeta que es repo git. El propio '.git' no cuenta.
+        let isRepo = false;
+        if (d.isDirectory() && d.name !== '.git') {
+          try { await stat(join(abs, '.git')); isRepo = true; } catch { /* no es repo */ }
+        }
+        entries.push({ name: d.name, rel: relative(realRoot, abs), isDir: d.isDirectory(), size, isRepo });
       }
       entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
       const relFromRoot = relative(realRoot, realTarget);
