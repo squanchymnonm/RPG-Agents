@@ -6,24 +6,31 @@ const authHeaders = (): Record<string, string> => {
   return t ? { authorization: `Bearer ${t}` } : {}
 }
 
+const q = (id: string, path?: string, extra: Record<string, string> = {}) => {
+  const p = new URLSearchParams({ id, ...extra })
+  if (path) p.set('path', path)
+  return p.toString()
+}
+
 export interface GitFile { rel: string; status: string; old?: string }
 export interface GitOverview { branch: string; default: string; ahead: number; behind: number; files: GitFile[] }
 export interface GitCommit { sha: string; shortSha: string; subject: string; pushed: boolean; files: GitFile[] }
 export interface GitWorking { staged: GitFile[]; unstaged: GitFile[]; untracked: GitFile[]; conflicted: GitFile[] }
-export interface GitStatus { working: GitWorking; overview: GitOverview; commits: GitCommit[]; canWrite: boolean }
+export interface GitRepo { rel: string; name: string }
+export interface GitStatus { working: GitWorking; overview: GitOverview; commits: GitCommit[]; repo: GitRepo }
 export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string }
 export type DiffBase = 'working' | 'staged' | 'branch' | `commit:${string}`
 
-export function useGitChanges() {
+export function useGit() {
   const status = ref<GitStatus | null>(null)
   const loading = ref(false)
   const error = ref('')
 
-  async function loadStatus(id: string) {
+  async function loadStatus(id: string, path?: string) {
     loading.value = true
     error.value = ''
     try {
-      const res = await fetch(`/git/status?id=${encodeURIComponent(id)}`, { headers: authHeaders() })
+      const res = await fetch(`/git/status?${q(id, path)}`, { headers: authHeaders() })
       if (!res.ok) { error.value = res.status === 409 ? 'sin-dir' : `HTTP ${res.status}`; return }
       status.value = (await res.json()) as GitStatus
     } catch {
@@ -33,11 +40,8 @@ export function useGitChanges() {
     }
   }
 
-  async function loadDiff(id: string, file: string, base: DiffBase): Promise<{ binary: boolean; patch: string }> {
-    const res = await fetch(
-      `/git/diff?id=${encodeURIComponent(id)}&file=${encodeURIComponent(file)}&base=${encodeURIComponent(base)}`,
-      { headers: authHeaders() },
-    )
+  async function loadDiff(id: string, file: string, base: DiffBase, path?: string): Promise<{ binary: boolean; patch: string }> {
+    const res = await fetch(`/git/diff?${q(id, path, { file, base })}`, { headers: authHeaders() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return (await res.json()) as { binary: boolean; patch: string }
   }
@@ -45,14 +49,14 @@ export function useGitChanges() {
   async function action(
     id: string,
     actionName: string,
-    payload: { paths?: string[]; message?: string } = {},
+    payload: { path?: string; paths?: string[]; message?: string } = {},
   ): Promise<GitActionResult> {
-    const res = await fetch(`/git/action?id=${encodeURIComponent(id)}`, {
+    const { path, ...rest } = payload
+    const res = await fetch(`/git/action?${q(id, path)}`, {
       method: 'POST',
       headers: { ...authHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ action: actionName, ...payload }),
+      body: JSON.stringify({ action: actionName, ...rest }),
     })
-    if (res.status === 403) return { ok: false, message: 'acciones git deshabilitadas (HABITAT_ALLOW_GIT_WRITE)' }
     if (!res.ok) return { ok: false, message: `HTTP ${res.status}` }
     return (await res.json()) as GitActionResult
   }

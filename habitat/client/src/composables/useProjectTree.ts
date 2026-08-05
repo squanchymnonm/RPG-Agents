@@ -6,7 +6,7 @@ const authHeaders = (): Record<string, string> => {
   return t ? { authorization: `Bearer ${t}` } : {}
 }
 
-export interface TreeEntry { name: string; rel: string; isDir: boolean; size: number }
+export interface TreeEntry { name: string; rel: string; isDir: boolean; size: number; isRepo: boolean }
 export interface TreeListing {
   root: string
   rel: string

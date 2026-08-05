@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
-import { useGitChanges, type DiffBase, type GitFile } from '../composables/useGitChanges'
+import { useGit, type DiffBase, type GitFile } from '../composables/useGit'
 import { parseDiff, type DiffHunk } from '../composables/parseDiff'
 import { useSessions } from '../stores/sessions'
 
@@ -8,7 +8,7 @@ const props = defineProps<{ id: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const store = useSessions()
-const { status, loading, error, loadStatus, loadDiff, action } = useGitChanges()
+const { status, loading, error, loadStatus, loadDiff, action } = useGit()
 
 const tab = ref<'work' | 'branch' | 'commits'>('work')
 const diff = ref<{ file: string; hunks: DiffHunk[]; binary: boolean } | null>(null)
@@ -50,7 +50,6 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { if (diff.value) dif
 onMounted(() => { refresh(); window.addEventListener('keydown', onKey) })
 onBeforeUnmount(() => { if (t) clearTimeout(t); window.removeEventListener('keydown', onKey) })
 
-function canWrite() { return !!status.value?.canWrite }
 function paths(list: GitFile[]) { return list.map((f) => f.rel) }
 </script>
 
@@ -86,20 +85,20 @@ function paths(list: GitFile[]) { return list.map((f) => f.rel) }
               <span class="st conf">{{ f.status }}</span> {{ f.rel }}
             </li>
           </ul>
-          <button v-if="canWrite()" class="act danger" :disabled="busy === 'abort'"
+          <button class="act danger" :disabled="busy === 'abort'"
             @click="run('abort', {}, 'Abortar el merge en curso?')">Abortar merge</button>
         </div>
 
         <div class="ch-group">
           <h4>Staged ({{ status.working.staged.length }})
-            <button v-if="canWrite() && status.working.staged.length" class="mini"
+            <button v-if="status.working.staged.length" class="mini"
               @click="run('unstage', { paths: paths(status.working.staged) })">unstage all</button>
           </h4>
           <ul>
             <li v-for="f in status.working.staged" :key="f.rel">
               <span class="st">{{ f.status }}</span>
               <a @click="openDiff(f.rel, 'staged')">{{ f.rel }}</a>
-              <button v-if="canWrite()" class="mini" @click="run('unstage', { paths: [f.rel] })">−</button>
+              <button class="mini" @click="run('unstage', { paths: [f.rel] })">−</button>
             </li>
           </ul>
         </div>
@@ -110,19 +109,19 @@ function paths(list: GitFile[]) { return list.map((f) => f.rel) }
             <li v-for="f in status.working.unstaged" :key="'u' + f.rel">
               <span class="st">{{ f.status }}</span>
               <a @click="openDiff(f.rel, 'working')">{{ f.rel }}</a>
-              <button v-if="canWrite()" class="mini" @click="run('stage', { paths: [f.rel] })">+</button>
-              <button v-if="canWrite()" class="mini danger"
+              <button class="mini" @click="run('stage', { paths: [f.rel] })">+</button>
+              <button class="mini danger"
                 @click="run('discard', { paths: [f.rel] }, `Descartar cambios de ${f.rel}? No se puede deshacer.`)">⌦</button>
             </li>
             <li v-for="f in status.working.untracked" :key="'n' + f.rel">
               <span class="st new">?</span>
               <a @click="openDiff(f.rel, 'working')">{{ f.rel }}</a>
-              <button v-if="canWrite()" class="mini" @click="run('stage', { paths: [f.rel] })">+</button>
+              <button class="mini" @click="run('stage', { paths: [f.rel] })">+</button>
             </li>
           </ul>
         </div>
 
-        <div v-if="canWrite()" class="ch-commit">
+        <div class="ch-commit">
           <input v-model="commitMsg" placeholder="mensaje de commit" @keyup.enter="doCommit" />
           <button :disabled="busy === 'commit' || !commitMsg.trim()" @click="doCommit">Commit</button>
         </div>
@@ -137,7 +136,7 @@ function paths(list: GitFile[]) { return list.map((f) => f.rel) }
           </li>
           <li v-if="!status.overview.files.length" class="ch-muted">sin diferencias con {{ status.overview.default }}</li>
         </ul>
-        <div v-if="canWrite()" class="ch-actions">
+        <div class="ch-actions">
           <button :disabled="busy === 'push'" @click="run('push')">Push</button>
           <button :disabled="busy === 'pull'" @click="run('pull')">Pull</button>
           <button :disabled="busy === 'merge-default'"
