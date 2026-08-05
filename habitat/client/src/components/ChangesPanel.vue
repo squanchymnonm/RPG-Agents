@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useGit, type DiffBase, type GitFile } from '../composables/useGit'
 import { parseDiff, type DiffHunk } from '../composables/parseDiff'
 import { useSessions } from '../stores/sessions'
+import GitDiff from './GitDiff.vue'
 
 const props = defineProps<{ id: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -162,24 +163,7 @@ function paths(list: GitFile[]) { return list.map((f) => f.rel) }
       </section>
     </div>
 
-    <!-- VISOR DIFF lado a lado (responsivo: split en ancho, inline en angosto) -->
-    <div v-if="diff" class="ch-diff" @click.self="diff = null">
-      <div class="ch-diff-box">
-        <header><b>{{ diff.file }}</b><button class="ch-x" @click="diff = null">✕</button></header>
-        <p v-if="diff.binary" class="ch-muted">archivo binario</p>
-        <div v-else class="diff-scroll">
-          <table v-for="(h, i) in diff.hunks" :key="i" class="diff-table">
-            <tbody>
-              <tr v-for="(l, j) in h.lines" :key="j" :class="l.type">
-                <td class="ln">{{ l.oldNo ?? '' }}</td>
-                <td class="ln">{{ l.newNo ?? '' }}</td>
-                <td class="code">{{ l.text }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <GitDiff v-if="diff" :file="diff.file" :hunks="diff.hunks" :binary="diff.binary" @close="diff = null" />
   </div>
 </template>
 
@@ -213,15 +197,4 @@ function paths(list: GitFile[]) { return list.map((f) => f.rel) }
 .dot { display: inline-block; width: 1.2em; } .dot.pushed { color: #5fb36b; }
 .ch-err { color: #d2553f; padding: 0 .75rem; font-size: .8rem; }
 .ch-muted { opacity: .6; font-size: .82rem; }
-.ch-diff { position: absolute; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 6; }
-.ch-diff-box { width: 94%; height: 90%; background: var(--color-base, #1a1410); border: 1px solid var(--color-line, #3a2e22); border-radius: var(--radius-md, 6px); display: flex; flex-direction: column; }
-.ch-diff-box header { display: flex; align-items: center; justify-content: space-between; padding: .4rem .6rem; border-bottom: 1px solid var(--color-line, #3a2e22); }
-.diff-scroll { flex: 1; overflow: auto; }
-.diff-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; font-size: .8rem; }
-.diff-table td { padding: 0 .4rem; white-space: pre; vertical-align: top; }
-.diff-table .ln { color: #6b5d49; text-align: right; user-select: none; width: 1px; }
-.diff-table tr.add .code { background: rgba(95,179,107,.16); }
-.diff-table tr.del .code { background: rgba(210,85,63,.16); }
-.diff-table tr.add .code::before { content: '+ '; color: #5fb36b; }
-.diff-table tr.del .code::before { content: '- '; color: #d2553f; }
 </style>
