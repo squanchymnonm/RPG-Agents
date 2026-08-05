@@ -750,7 +750,7 @@ Con el estilo:
 
 - [ ] **Step 2: Dejar `ProjectExplorer.vue` como shell**
 
-Pasa a ser dueño del `path` y de los breadcrumbs. Todavía sin pestañas (eso es Task 9):
+Pasa a ser dueño del `path` y de los breadcrumbs. Todavía sin pestañas (eso es Task 8):
 
 ```vue
 <script setup lang="ts">
@@ -804,7 +804,9 @@ git commit -m "refactor(habitat): extraer ProjectFiles, ProjectExplorer dueño d
 
 ---
 
-### Task 8: `ChangesPanel` → `GitPanel` + `GitWork` + `GitBranchDiff` + `GitCommits`
+### Task 8: `ChangesPanel` → `GitPanel` + hijos, y pestañas `Archivos | Git`
+
+> **Nota:** esta task fusiona lo que el plan original tenía como Tasks 8 y 9. Se hacen juntas porque separarlas dejaba un commit intermedio con el build roto (`ChangesPanel.vue` borrado mientras `DetailPanel` todavía lo importaba). **No existe una Task 9**: después de esta viene la Task 10.
 
 **Files:**
 - Create: `habitat/client/src/components/GitPanel.vue`
@@ -813,6 +815,8 @@ git commit -m "refactor(habitat): extraer ProjectFiles, ProjectExplorer dueño d
 - Create: `habitat/client/src/components/GitCommits.vue`
 - Create: `habitat/client/src/styles/git.css`
 - Delete: `habitat/client/src/components/ChangesPanel.vue`
+- Modify: `habitat/client/src/components/ProjectExplorer.vue`
+- Modify: `habitat/client/src/components/DetailPanel.vue` (~línea 125 dtools, ~166 overlays)
 
 **Interfaces:**
 - Produces:
@@ -820,9 +824,12 @@ git commit -m "refactor(habitat): extraer ProjectFiles, ProjectExplorer dueño d
   - `GitWork` props `{ status: GitStatus }`, emits `run(name, payload?, confirmMsg?)` y `diff(file, base)`.
   - `GitBranchDiff` props `{ status: GitStatus }`, emit `diff(file, base)`.
   - `GitCommits` props `{ status: GitStatus }`, emit `diff(file, base)`.
-- Consumes: `useGit()` de Task 4, `GitDiff` de Task 6.
+  - `ProjectExplorer` props `{ id: string; tab?: 'files' | 'git' }`. El `tab` inicial lo decide quien lo abre.
+- Consumes: `useGit()` de Task 4, `GitDiff` de Task 6, `ProjectFiles` de Task 7.
 
-Los tres hijos son **presentacionales**: no llaman a la API, emiten `run` y el `GitPanel` ejecuta. Eso mantiene toda la lógica de red y de `busy` en un solo lugar.
+Los tres hijos de `GitPanel` son **presentacionales**: no llaman a la API, emiten `run` y el `GitPanel` ejecuta. Eso mantiene toda la lógica de red y de `busy` en un solo lugar.
+
+**El build tiene que quedar verde al final de la task.** Los Steps 1-4 crean los componentes nuevos; el 5 borra `ChangesPanel.vue` y los 6-7 arreglan a sus consumidores. Recién ahí se corre el typecheck y se commitea, **en un solo commit**.
 
 - [ ] **Step 1: Crear `habitat/client/src/styles/git.css`**
 
@@ -1010,33 +1017,9 @@ defineExpose({ repoLabel, refresh })
 git rm habitat/client/src/components/ChangesPanel.vue
 ```
 
-`DetailPanel.vue` todavía lo importa: eso se arregla en Task 9, que es la que cierra este refactor. Las dos tasks se commitean juntas si el build no queda verde en el medio.
+Queda un import roto en `DetailPanel.vue`; lo cierran los Steps 6-7. No correr el typecheck todavía.
 
-- [ ] **Step 6: Verificar**
-
-Run: `cd habitat/client && npx vue-tsc --noEmit`
-Expected: el único error debe ser el import roto de `ChangesPanel` en `DetailPanel.vue`, que resuelve Task 9.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add habitat/client/src
-git commit -m "refactor(habitat): partir ChangesPanel en GitPanel + GitWork/GitBranchDiff/GitCommits"
-```
-
----
-
-### Task 9: Pestañas `Archivos | Git` y chip de repo en `ProjectExplorer`
-
-**Files:**
-- Modify: `habitat/client/src/components/ProjectExplorer.vue`
-- Modify: `habitat/client/src/components/DetailPanel.vue` (~línea 125 dtools, ~166 overlays)
-
-**Interfaces:**
-- Produces: `ProjectExplorer` props `{ id: string; tab?: 'files' | 'git' }`. El `tab` inicial lo decide quien lo abre.
-- Consumes: `GitPanel` (Task 8), `ProjectFiles` (Task 7).
-
-- [ ] **Step 1: Agregar las pestañas y el chip**
+- [ ] **Step 6: Agregar las pestañas y el chip en `ProjectExplorer.vue`**
 
 En `ProjectExplorer.vue`:
 
@@ -1107,7 +1090,7 @@ Estilos nuevos:
 
 Ojo: `.pe-body` era `display: flex` en fila para el split lista/preview. Ese split ahora vive dentro de `ProjectFiles.vue` con sus propios estilos, así que acá pasa a `column`.
 
-- [ ] **Step 2: Actualizar `DetailPanel.vue`**
+- [ ] **Step 7: Actualizar `DetailPanel.vue`**
 
 Borrar `import ChangesPanel from './ChangesPanel.vue'` (línea 5) y la variable `changesOpen`. El botón `⌥ Cambios` abre Proyecto en la pestaña Git:
 
@@ -1137,18 +1120,18 @@ Y en los overlays, borrar la línea de `<ChangesPanel .../>` y pasarle el tab al
 
 (`explorerOpen` ya existe en `DetailPanel`; leer el script actual y ajustar en vez de duplicar la declaración.)
 
-- [ ] **Step 3: Verificar**
+- [ ] **Step 8: Verificar que el build quedó verde**
 
 Run: `cd habitat/client && npx vue-tsc --noEmit && npm run build`
-Expected: sin errores.
+Expected: **sin errores**. Si queda algún import de `ChangesPanel`, es que falta el Step 7.
 
 En el navegador: `🗂 Proyecto` abre en Archivos; `⌥ Cambios` abre en Git. Navegar a una subcarpeta que sea repo (en Artisano: `back`) y verificar que el chip cambia a `repo: back` y que el status es el de ese repo. La barra `↻ Actualizar / Pull / Push` se ve desde las tres sub-pestañas.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 9: Commit (uno solo, con el build verde)**
 
 ```bash
-git add habitat/client/src/components
-git commit -m "feat(habitat): vista de proyecto con pestañas Archivos|Git y chip de repo"
+git add -A habitat/client/src
+git commit -m "refactor(habitat): GitPanel + hijos y vista de proyecto con pestañas Archivos|Git"
 ```
 
 ---
