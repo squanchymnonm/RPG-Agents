@@ -2669,10 +2669,10 @@ describe('canCreatePr', () => {
     expect(canCreatePr({ ...base, files: [{ rel: 'a.js', status: 'M' }] })).toEqual({ can: true, why: '' })
   })
 
-  it('bloquea si hay commits sin pushear', () => {
+  it('advierte pero no bloquea si hay commits por delante del default', () => {
     const r = canCreatePr({ ...base, ahead: 2 })
-    expect(r.can).toBe(false)
-    expect(r.why).toMatch(/pusheá primero/)
+    expect(r.can).toBe(true)
+    expect(r.why).toMatch(/sin pushear/)
   })
 
   it('bloquea si estás en la rama default', () => {
@@ -2683,15 +2683,7 @@ describe('canCreatePr', () => {
 })
 ```
 
-`ahead` en `branchOverview` cuenta los commits por encima de `origin/<default>`, no los sin pushear. Es una aproximación deliberada: si `ahead > 0` puede que ya estén pusheados a `origin/<branch>`. Para no bloquear de más, el predicado usa `ahead > 0` **y** que no haya `origin/<branch>`... pero el cliente no tiene ese dato. Decisión: usar `ahead > 0` como señal y dejar que el server dé el error real de `gh` si igual se intenta. Para eso el botón queda **habilitado** con `ahead > 0` pero con un `title` de advertencia, y sólo se **deshabilita** cuando estás en la default. Ajustar el test:
-
-```ts
-  it('advierte pero no bloquea si hay commits por delante del default', () => {
-    const r = canCreatePr({ ...base, ahead: 2 })
-    expect(r.can).toBe(true)
-    expect(r.why).toMatch(/sin pushear/)
-  })
-```
+**Por qué `ahead > 0` advierte en vez de bloquear:** `ahead` en `branchOverview` cuenta commits por encima de `origin/<default>`, **no** los que faltan pushear. Con `ahead > 0` los commits pueden estar perfectamente pusheados a `origin/<branch>`. Bloquear con esa señal daría falsos negativos, y el cliente no tiene el dato de `origin/<branch>` para decidir mejor. Así que el único bloqueo real es estar en la rama default (un PR de main a main no existe); con commits por delante el botón queda habilitado y la advertencia va en el `title`, dejando que `gh` dé el error real si hace falta.
 
 En `index.test.js`:
 
