@@ -47,17 +47,18 @@ test('commit rechaza mensaje vacío y usa -m', async () => {
   assert.deepEqual(got, '-C /proj commit -m mi mensaje');
 });
 
-test('push intenta git push y cae a -u origin <branch> si falla', async () => {
+test('push deriva el branch del repo y cae a -u origin <branch> si falla', async () => {
   const calls = [];
   const exec = async (file, args) => {
-    calls.push(args.join(' '));
-    if (calls.length === 1) { const e = new Error('no upstream'); e.stderr = 'has no upstream branch'; throw e; }
+    const a = args.join(' ');
+    calls.push(a);
+    if (a.includes('rev-parse --abbrev-ref HEAD')) return 'feature/x\n';
+    if (a === '-C /proj push') { const e = new Error('no upstream'); e.stderr = 'has no upstream branch'; throw e; }
     return '';
   };
-  const r = await push('/proj', 'feature/x', exec);
+  const r = await push('/proj', exec);
   assert.equal(r.ok, true);
-  assert.ok(calls[0].includes('push'));
-  assert.ok(calls[1].includes('push -u origin feature/x'));
+  assert.ok(calls.some((c) => c.includes('push -u origin feature/x')));
 });
 
 test('mergeDefault hace fetch + merge y reporta conflicto', async () => {

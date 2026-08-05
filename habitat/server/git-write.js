@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { validBranch, remoteDefaultBranch } from './git.js';
+import { validBranch, remoteDefaultBranch, currentBranch } from './git.js';
 
 const run = promisify(execFile);
 const defaultExec = async (file, args) => (await run(file, args)).stdout;
@@ -41,9 +41,14 @@ export async function commit(cwd, message, exec = defaultExec) {
   return gitOk(cwd, ['commit', '-m', message], exec);
 }
 
-export async function push(cwd, branch, exec = defaultExec) {
+export async function push(cwd, exec = defaultExec) {
   const first = await gitOk(cwd, ['push'], exec);
-  if (first.ok || !validBranch(branch)) return first;
+  if (first.ok) return first;
+  // Sin upstream: reintentar con -u origin <branch>. El branch se deriva del repo
+  // real, no del cacheado en la sesión: tras un checkout o en un sub-repo el de la
+  // sesión es el equivocado.
+  const branch = await currentBranch(cwd, exec);
+  if (!validBranch(branch)) return first;
   return gitOk(cwd, ['push', '-u', 'origin', branch], exec);
 }
 

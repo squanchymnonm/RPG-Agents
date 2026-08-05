@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStore, newSession } from './state.js';
@@ -17,6 +18,20 @@ const config = { PORT: 0, BIND: '127.0.0.1', TOKEN: 'secret', PREVIEW_LINES: 5, 
 
 function listen(server) {
   return new Promise((res) => server.listen(0, '127.0.0.1', () => res(server.address().port)));
+}
+
+// Repo git temporal con un commit inicial. Identidad explícita para no depender
+// de la config global de git en la máquina que corre los tests.
+function tmpRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'habitat-git-'));
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' });
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@local');
+  git('config', 'user.name', 'test');
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\n');
+  git('add', '-A');
+  git('commit', '-m', 'inicial');
+  return { dir, git };
 }
 
 test('POST /hooks sin token -> 401', async () => {
@@ -1082,8 +1097,9 @@ test('GET /git/status sin sesion -> 409', async () => {
 });
 
 test('GET /git/diff rechaza path fuera del root -> 400', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert(newSession('s1', { cwd: '/home/u/proj', name: 'proj', status: 'working' }));
+  store.upsert(newSession('s1', { cwd: dir, name: 'proj', status: 'working' }));
   const { server } = createApp({ config, store });
   const port = await listen(server);
   const res = await fetch(`http://127.0.0.1:${port}/git/diff?id=s1&file=../../etc/passwd`, {
@@ -1091,26 +1107,34 @@ test('GET /git/diff rechaza path fuera del root -> 400', async () => {
   });
   assert.equal(res.status, 400);
   server.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
-test('POST /git/action con gate off -> 403', async () => {
+test('POST /git/action ya no está detrás de un gate (stage funciona)', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert({ id: 's1', cwd: '/home/u/proj', name: 'proj', status: 'working' });
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
   const { server } = createApp({ config, store }); // config sin ALLOW_GIT_WRITE
   const port = await listen(server);
+  writeFileSync(join(dir, 'b.js'), 'const b = 2\n');
   const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
-    body: JSON.stringify({ action: 'stage', paths: ['a.js'] }),
+    body: JSON.stringify({ action: 'stage', paths: ['b.js'] }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
   server.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
-test('POST /git/action con gate on rechaza path fuera de root -> 400', async () => {
+// Cobertura que reemplaza a la vieja 'con gate on rechaza path fuera de root': el gate
+// desapareció, pero el guard sobre `paths` (ahora contra repo.dir) sigue vigente.
+test('POST /git/action rechaza paths fuera del repo -> 400', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert({ id: 's1', cwd: '/home/u/proj', name: 'proj', status: 'working' });
-  const { server } = createApp({ config: { ...config, ALLOW_GIT_WRITE: true }, store });
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
   const port = await listen(server);
   const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
     method: 'POST',
@@ -1119,6 +1143,65 @@ test('POST /git/action con gate on rechaza path fuera de root -> 400', async () 
   });
   assert.equal(res.status, 400);
   server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status con path scopea al sub-repo y devuelve repo', async () => {
+  const { dir, git } = tmpRepo();
+  // sub-repo anidado en back/
+  const back = join(dir, 'back');
+  mkdirSync(back);
+  const sub = (...args) => execFileSync('git', ['-C', back, ...args], { stdio: 'pipe' });
+  sub('init', '-b', 'main');
+  sub('config', 'user.email', 'test@local');
+  sub('config', 'user.name', 'test');
+  writeFileSync(join(back, 'x.js'), 'x\n');
+  sub('add', '-A');
+  sub('commit', '-m', 'inicial back');
+  git('add', '-A'); // el padre ignora back/ o lo trackea, da igual acá
+
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1&path=back`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.repo.name, 'back');
+  assert.equal(body.repo.rel, 'back');
+  assert.equal(body.canWrite, undefined); // el gate se fue del payload
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status con path que escapa -> 400', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1&path=../fuera`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 400);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status en un cwd sin repo git -> 409', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'habitat-norepo-'));
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409); // el cliente lo muestra como "sin repo git acá"
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('GET /tree lista todo incluyendo dotfiles y .git', async () => {

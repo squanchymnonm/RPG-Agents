@@ -12,7 +12,7 @@ import { applyEvent, staminaFromStatus, usageFromStatus, dismissAlert } from './
 import { attachWs } from './ws.js';
 import { attachTerm } from './term.js';
 import { capturePane, sendKeys, gitBranch, listSessions, newTmuxSession, killTmuxSession } from './tmux.js';
-import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch } from './git.js';
+import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, resolveRepo } from './git.js';
 import { workingStatus, branchOverview, commits as gitCommits, filePatch } from './git-read.js';
 import * as gitWrite from './git-write.js';
 import { worktreePaths, worktreeName } from './worktree.js';
@@ -70,6 +70,19 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
   function authorize(req, res) {
     if (!isAuthenticated(req, { sessionStore, token: config.TOKEN })) { res.writeHead(401).end(); return false; }
     return true;
+  }
+
+  // Resuelve el repo scopeado por ?path=. Escribe la respuesta de error y devuelve
+  // null si no se puede. 400 = el path escapa del worktree (input inválido);
+  // 409 = no hay sesión/cwd, o ahí no hay repo git (estado, no input). El cliente
+  // muestra el 409 como "sin repo git acá".
+  async function resolveRepoOr(res, s, url) {
+    if (!s || !s.cwd) { res.writeHead(409).end(); return null; }
+    const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '');
+    if (resolveWithinRoot(s.cwd, rel) === null) { res.writeHead(400).end(); return null; }
+    const repo = await resolveRepo(s.cwd, rel);
+    if (!repo) { res.writeHead(409).end(); return null; }
+    return repo;
   }
 
   let hub;
@@ -321,13 +334,14 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
     if (req.method === 'GET' && url.pathname === '/git/status') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       try {
         const [working, overview, log] = await Promise.all([
-          workingStatus(s.cwd), branchOverview(s.cwd), gitCommits(s.cwd),
+          workingStatus(repo.dir), branchOverview(repo.dir), gitCommits(repo.dir),
         ]);
         res.writeHead(200, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ working, overview, commits: log, canWrite: !!config.ALLOW_GIT_WRITE }));
+          .end(JSON.stringify({ working, overview, commits: log, repo: { rel: repo.rel, name: repo.name } }));
       } catch { res.writeHead(500).end(); }
       return;
     }
@@ -335,12 +349,13 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
     if (req.method === 'GET' && url.pathname === '/git/diff') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       const file = url.searchParams.get('file') || '';
       const base = url.searchParams.get('base') || 'working';
-      if (!file || resolveWithinRoot(s.cwd, file) === null) { res.writeHead(400).end(); return; }
+      if (!file || resolveWithinRoot(repo.dir, file) === null) { res.writeHead(400).end(); return; }
       try {
-        const out = await filePatch(s.cwd, file, base);
+        const out = await filePatch(repo.dir, file, base);
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
       } catch { res.writeHead(500).end(); }
       return;
@@ -348,28 +363,28 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
 
     if (req.method === 'POST' && url.pathname === '/git/action') {
       if (!authorize(req, res)) return;
-      if (!config.ALLOW_GIT_WRITE) { res.writeHead(403).end(); return; }
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       let body;
       try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
       const { action, paths, message } = body || {};
       if (paths !== undefined) {
         if (!Array.isArray(paths)) { res.writeHead(400).end(); return; }
         for (const p of paths) {
-          if (typeof p !== 'string' || resolveWithinRoot(s.cwd, p) === null) { res.writeHead(400).end(); return; }
+          if (typeof p !== 'string' || resolveWithinRoot(repo.dir, p) === null) { res.writeHead(400).end(); return; }
         }
       }
       let r;
       switch (action) {
-        case 'stage': r = await gitWrite.stage(s.cwd, paths); break;
-        case 'unstage': r = await gitWrite.unstage(s.cwd, paths); break;
-        case 'discard': r = await gitWrite.discard(s.cwd, paths); break;
-        case 'commit': r = await gitWrite.commit(s.cwd, message); break;
-        case 'push': r = await gitWrite.push(s.cwd, s.branch); break;
-        case 'pull': r = await gitWrite.pull(s.cwd); break;
-        case 'merge-default': r = await gitWrite.mergeDefault(s.cwd); break;
-        case 'abort': r = await gitWrite.abort(s.cwd); break;
+        case 'stage': r = await gitWrite.stage(repo.dir, paths); break;
+        case 'unstage': r = await gitWrite.unstage(repo.dir, paths); break;
+        case 'discard': r = await gitWrite.discard(repo.dir, paths); break;
+        case 'commit': r = await gitWrite.commit(repo.dir, message); break;
+        case 'push': r = await gitWrite.push(repo.dir); break;
+        case 'pull': r = await gitWrite.pull(repo.dir); break;
+        case 'merge-default': r = await gitWrite.mergeDefault(repo.dir); break;
+        case 'abort': r = await gitWrite.abort(repo.dir); break;
         default: res.writeHead(400).end(); return;
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r));
