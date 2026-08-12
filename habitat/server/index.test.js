@@ -1146,6 +1146,59 @@ test('POST /git/action rechaza paths fuera del repo -> 400', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('GET /git/branches lista locales y remotas', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/branches?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.current, 'main');
+  assert.ok(body.local.some((b) => b.name === 'main' && b.current === true));
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action checkout crea y cambia de rama', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const post = (body) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify(body),
+  });
+  const c = await (await post({ action: 'branch-create', branch: 'feature/x', from: 'HEAD' })).json();
+  assert.equal(c.ok, true);
+  const b = await (await post({ action: 'checkout', branch: 'main' })).json();
+  assert.equal(b.ok, true);
+  assert.equal(b.branch, 'main');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action con acción desconocida -> 400', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'rm-rf' }),
+  });
+  assert.equal(res.status, 400);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('GET /git/status con path scopea al sub-repo y devuelve repo', async () => {
   const { dir, git } = tmpRepo();
   // sub-repo anidado en back/

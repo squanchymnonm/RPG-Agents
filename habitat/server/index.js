@@ -15,6 +15,8 @@ import { capturePane, sendKeys, gitBranch, listSessions, newTmuxSession, killTmu
 import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, resolveRepo } from './git.js';
 import { workingStatus, branchOverview, commits as gitCommits, filePatch } from './git-read.js';
 import * as gitWrite from './git-write.js';
+import * as gitBranches from './git-branches.js';
+import { createLocks } from './locks.js';
 import { worktreePaths, worktreeName } from './worktree.js';
 import { resolveWithinRoot, sanitizeFilename, uniqueName, maxUploadBytes } from './files.js';
 import { openInEditor } from './editor.js';
@@ -64,6 +66,7 @@ function readBodyCapped(req, maxBytes) {
 export function createApp({ config, store, settingsStore = createSettings(), projectsStore, sessionStore = createSessionStore({ persistPath: config.SESSIONS_PATH, ttlMs: config.SESSION_TTL_MS }), tmux = { listSessions, newTmuxSession, killTmuxSession }, git: gitOverrides = {}, editor = { openInEditor } }) {
   const git = { worktreeAdd, worktreeRemove, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, ...gitOverrides };
   const projects = projectsStore || createProjects({ seed: config.PROJECTS });
+  const locks = createLocks();
   // Autoriza endpoints sensibles (hooks, spawn, gestión, upload). Antes exigía loopback
   // (LOCAL); detrás de Tailscale Serve toda conexión llega como loopback, así que ese gate
   // dejó de aislar. La barrera real es la auth: cookie de sesión o token (Bearer/?token=).
@@ -351,6 +354,18 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/git/branches') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await gitBranches.listBranches(repo.dir);
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/git/diff') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
@@ -373,25 +388,39 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       if (!repo) return;
       let body;
       try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
-      const { action, paths, message } = body || {};
+      const { action, paths, message, branch, from } = body || {};
       if (paths !== undefined) {
         if (!Array.isArray(paths)) { res.writeHead(400).end(); return; }
         for (const p of paths) {
           if (typeof p !== 'string' || resolveWithinRoot(repo.dir, p) === null) { res.writeHead(400).end(); return; }
         }
       }
+      if (branch !== undefined && typeof branch !== 'string') { res.writeHead(400).end(); return; }
       let r;
-      switch (action) {
-        case 'stage': r = await gitWrite.stage(repo.dir, paths); break;
-        case 'unstage': r = await gitWrite.unstage(repo.dir, paths); break;
-        case 'discard': r = await gitWrite.discard(repo.dir, paths); break;
-        case 'commit': r = await gitWrite.commit(repo.dir, message); break;
-        case 'push': r = await gitWrite.push(repo.dir); break;
-        case 'pull': r = await gitWrite.pull(repo.dir); break;
-        case 'merge-default': r = await gitWrite.mergeDefault(repo.dir); break;
-        case 'abort': r = await gitWrite.abort(repo.dir); break;
-        default: res.writeHead(400).end(); return;
+      try {
+        r = await locks.run(repo.dir, async () => {
+          switch (action) {
+            case 'stage': return gitWrite.stage(repo.dir, paths);
+            case 'unstage': return gitWrite.unstage(repo.dir, paths);
+            case 'discard': return gitWrite.discard(repo.dir, paths);
+            case 'commit': return gitWrite.commit(repo.dir, message);
+            case 'push': return gitWrite.push(repo.dir);
+            case 'pull': return gitWrite.pull(repo.dir);
+            case 'merge-default': return gitWrite.mergeDefault(repo.dir);
+            case 'abort': return gitWrite.abort(repo.dir);
+            case 'checkout': return gitBranches.checkout(repo.dir, branch);
+            case 'branch-create': return gitBranches.createBranch(repo.dir, branch, from);
+            default: return null; // acción desconocida
+          }
+        });
+      } catch (e) {
+        res.writeHead(e && e.message === 'busy' ? 409 : 500).end();
+        return;
       }
+      if (r === null) { res.writeHead(400).end(); return; }
+      // Tras un checkout el branch de la sesión quedó stale: refrescarlo ya, sin
+      // esperar al próximo hook. hooks-logic lo reconfirma después.
+      if (r.ok && r.branch && s.cwd === repo.dir) store.upsert({ ...s, branch: r.branch });
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r));
       return;
     }
