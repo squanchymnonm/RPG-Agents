@@ -23,8 +23,10 @@
   --font-lore:"Fraunces", Georgia, serif;
   --font-system:"Hanken Grotesk", system-ui, -apple-system, sans-serif;
   --font-machine:"JetBrains Mono", ui-monospace, monospace;
-  /* radios */
-  --radius-card:14px; --radius-medallion:18px;
+  /* radios — sm es para controles (botones, inputs, chips); card/medallion para superficies.
+     Faltaba: había CSS pidiendo var(--radius-sm, 4px), así que caía siempre al 4px y los
+     controles quedaban angulosos contra una app redondeada. */
+  --radius-sm:10px; --radius-card:14px; --radius-medallion:18px;
   /* sombras */
   --shadow-sh1:0 1px 0 rgba(255,255,255,.03), 0 2px 8px rgba(0,0,0,.4);
   --shadow-sh2:0 2px 4px rgba(0,0,0,.35), 0 14px 40px rgba(0,0,0,.5);

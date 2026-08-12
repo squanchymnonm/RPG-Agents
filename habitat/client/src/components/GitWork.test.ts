@@ -12,7 +12,7 @@ const status = (over: Partial<GitStatus> = {}): GitStatus => ({
 })
 
 const amendBtn = (w: ReturnType<typeof mount>) =>
-  w.findAll('.g-commit .g-act').find((b) => b.text() === 'amend')!
+  w.findAll('.gw-commit .g-btn').find((b) => b.text() === 'amend')!
 
 // El aviso de amend estaba invertido: status.commits son los commits en
 // default..HEAD, así que con la lista vacía `last` era undefined y no se avisaba

@@ -37,7 +37,7 @@ describe('GitCommits — historial completo: condiciones de carrera', () => {
     await flushPromises()
 
     // Activar "historial completo": dispara loadMore() para el repo s1.
-    await w.find('.gc-toggle button').trigger('click')
+    await w.find('.gc-toggle').trigger('click')
     await flushPromises()
     expect(pending.filter((p) => p.url.includes('/git/log')).length).toBe(1)
 
@@ -64,7 +64,7 @@ describe('GitCommits — historial completo: condiciones de carrera', () => {
     const w = mount(GitCommits, { props: { status: statusBody, id: 's1', path: '' } })
     await flushPromises()
 
-    const toggle = () => w.find('.gc-toggle button').trigger('click')
+    const toggle = () => w.find('.gc-toggle').trigger('click')
 
     // historial completo -> loadMore() #1 en vuelo (sin resolver todavía).
     await toggle()
