@@ -12,19 +12,32 @@ const skip = ref(0)
 const atEnd = ref(false)
 const loadingMore = ref(false)
 const PAGE = 50
+// Generación del contexto (id/path). Cada loadMore() en vuelo recuerda con qué
+// generación arrancó; si el contexto cambió mientras esperaba la respuesta del
+// server, la descarta al volver en vez de aplicarla — si no, un fetch viejo que
+// llega después del reset pisa o mezcla el log con commits de otro repo.
+const gen = ref(0)
 
 async function loadMore() {
+  if (loadingMore.value) return // ya hay una carga en curso: no reentrar (evita duplicar página)
   loadingMore.value = true
-  const rows = await loadLog(props.id, props.path, { limit: PAGE, skip: skip.value })
-  log.value = skip.value === 0 ? rows : [...log.value, ...rows]
-  skip.value += rows.length
+  const myGen = gen.value
+  const mySkip = skip.value // capturado ahora: no leer skip.value de nuevo tras el await
+  const rows = await loadLog(props.id, props.path, { limit: PAGE, skip: mySkip })
+  if (myGen !== gen.value) return // el contexto cambió mientras esperábamos: descartar sin tocar el estado
+  log.value = mySkip === 0 ? rows : [...log.value, ...rows]
+  skip.value = mySkip + rows.length
   atEnd.value = rows.length < PAGE
   loadingMore.value = false
 }
 
 // Al cambiar de repo se descarta lo cargado: el historial es de otro repo.
+// Se libera el guard de reentrancia: una carga vieja en vuelo para el repo
+// anterior ya no cuenta como "en curso" para el contexto nuevo.
 watch(() => [props.id, props.path] as const, () => {
+  gen.value++
   log.value = []; skip.value = 0; atEnd.value = false
+  loadingMore.value = false
   if (showAll.value) loadMore()
 })
 watch(showAll, (on) => { if (on && !log.value.length) loadMore() })

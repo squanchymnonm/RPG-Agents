@@ -1163,7 +1163,10 @@ test('GET /git/branches lista locales y remotas', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('GET /git/log devuelve el historial y acota el limit', async () => {
+// Nombre ajustado: con un solo commit en el repo, "acota el limit" no se
+// ejerce (pasaría igual sin clamp alguno). Esta cubre el shape de la respuesta;
+// el clamp real lo cubre el test siguiente.
+test('GET /git/log devuelve el historial con sha/subject/autor/fecha', async () => {
   const { dir } = tmpRepo();
   const store = createStore();
   store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
@@ -1176,6 +1179,35 @@ test('GET /git/log devuelve el historial y acota el limit', async () => {
   const body = await res.json();
   assert.equal(body.length, 1);
   assert.equal(body[0].subject, 'inicial');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// El test anterior no prueba el acotado a 200: con 1 solo commit, pedir
+// limit=9999 y recibir 1 pasaría igual si el endpoint pasara el 9999 crudo a
+// git. Este arma un historial de 206 commits con commit-tree/update-ref
+// (plumbing: reusa el mismo árbol del commit inicial y no toca el working
+// tree, así no hay que pagar 205 commits reales vía `git commit`) y verifica
+// que el clamp real de fullLog corta en 200.
+test('GET /git/log acota a 200 aunque el historial real tenga más', async () => {
+  const { dir, git } = tmpRepo();
+  const tree = git('write-tree').toString().trim();
+  let parent = git('rev-parse', 'HEAD').toString().trim();
+  for (let i = 0; i < 205; i++) {
+    parent = git('commit-tree', tree, '-p', parent, '-m', `c${i}`).toString().trim();
+  }
+  git('update-ref', 'refs/heads/main', parent);
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/log?id=s1&limit=9999`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.length, 200); // 206 commits reales, clampeado a 200
+  assert.equal(body[0].subject, 'c204'); // el más nuevo (tip) primero
   server.close();
   rmSync(dir, { recursive: true, force: true });
 });
