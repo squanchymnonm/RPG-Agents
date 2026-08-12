@@ -118,4 +118,28 @@ export async function filePatch(cwd, rel, base, exec = defaultExec) {
   return { binary, patch: binary ? '' : patch };
 }
 
+export function parseFullLog(out) {
+  const rows = [];
+  for (const line of String(out).split('\n')) {
+    if (!line.trim()) continue;
+    const [sha, shortSha, subject, author, date] = line.split('\x1f');
+    if (!sha) continue;
+    rows.push({ sha, shortSha, subject, author, date });
+  }
+  return rows;
+}
+
+// Historial completo del repo, paginado. A diferencia de commits(), NO trae los
+// archivos de cada commit: eso es un `git show` por commit y con cientos de
+// commits se vuelve inusable. El cliente los pide al expandir.
+export async function fullLog(cwd, { limit = 50, skip = 0 } = {}, exec = defaultExec) {
+  const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const s = Math.max(Number(skip) || 0, 0);
+  try {
+    return parseFullLog(await exec('git', [
+      '-C', cwd, 'log', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%as', '-n', String(n), `--skip=${s}`,
+    ]));
+  } catch { return []; }
+}
+
 export { defaultExec, remoteDefaultBranch, currentBranch, validBranch };

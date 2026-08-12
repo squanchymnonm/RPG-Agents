@@ -87,4 +87,17 @@ export async function abort(cwd, exec = defaultExec) {
   return gitOk(cwd, ['merge', '--abort'], exec);
 }
 
+// 'fetchRemote' y no 'fetch': no pisar el fetch global de Node.
+export async function fetchRemote(cwd, exec = defaultExec) {
+  return gitOk(cwd, ['fetch', '--all', '--prune'], exec);
+}
+
+// Amend del último commit. Sin mensaje, mantiene el existente (--no-edit) para
+// no abrir un editor en un contexto no interactivo.
+export async function amend(cwd, message, exec = defaultExec) {
+  const msg = typeof message === 'string' ? message.trim() : '';
+  const args = msg ? ['commit', '--amend', '-m', msg] : ['commit', '--amend', '--no-edit'];
+  return gitOk(cwd, args, exec);
+}
+
 export { defaultExec, validBranch, remoteDefaultBranch, trimErr, gitOk };

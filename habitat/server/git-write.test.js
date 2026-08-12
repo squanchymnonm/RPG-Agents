@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stage, unstage, discard, commit, push, pull, mergeDefault, abort } from './git-write.js';
+import { stage, unstage, discard, commit, push, pull, mergeDefault, abort, fetchRemote, amend } from './git-write.js';
 
 test('stage usa git add -- <paths>', async () => {
   let got;
@@ -88,4 +88,20 @@ test('pull --no-edit y abort --abort', async () => {
   assert.ok(pullArgs.includes('pull --no-edit'));
   assert.equal((await abort('/proj', exec)).ok, true);
   assert.ok(abortArgs.includes('merge --abort'));
+});
+
+test('fetchRemote usa fetch --all --prune', async () => {
+  let got;
+  const exec = async (file, args) => { got = args.join(' '); return ''; };
+  assert.equal((await fetchRemote('/proj', exec)).ok, true);
+  assert.equal(got, '-C /proj fetch --all --prune');
+});
+
+test('amend con mensaje usa -m, sin mensaje usa --no-edit', async () => {
+  const calls = [];
+  const exec = async (file, args) => { calls.push(args.join(' ')); return ''; };
+  await amend('/proj', 'nuevo mensaje', exec);
+  assert.equal(calls[0], '-C /proj commit --amend -m nuevo mensaje');
+  await amend('/proj', '', exec);
+  assert.equal(calls[1], '-C /proj commit --amend --no-edit');
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePorcelain, workingStatus, parseNameStatus, branchOverview, commits } from './git-read.js';
+import { parsePorcelain, workingStatus, parseNameStatus, branchOverview, commits, parseFullLog, fullLog } from './git-read.js';
 
 test('parsePorcelain separa staged/unstaged/untracked/conflicted', () => {
   // formato porcelain v1 -z: "XY path\0", rename agrega token de origen
@@ -171,4 +171,25 @@ test('filePatch acepta sha hex válido en commit:<sha>', async () => {
   assert.ok(calls[0].includes('show'), 'debe llamar git show');
   assert.ok(calls[0].includes('abc123'), 'debe incluir el sha');
   assert.equal(r.patch, 'diff output\n');
+});
+
+test('parseFullLog extrae sha, subject, autor y fecha', () => {
+  const out = [
+    'aaa111\x1faaa\x1fmi commit\x1fNico\x1f2026-08-05',
+    'bbb222\x1fbbb\x1fotro\x1fNico\x1f2026-08-04',
+  ].join('\n');
+  assert.deepEqual(parseFullLog(out), [
+    { sha: 'aaa111', shortSha: 'aaa', subject: 'mi commit', author: 'Nico', date: '2026-08-05' },
+    { sha: 'bbb222', shortSha: 'bbb', subject: 'otro', author: 'Nico', date: '2026-08-04' },
+  ]);
+});
+
+test('fullLog pasa -n y --skip y no pide archivos por commit', async () => {
+  const calls = [];
+  const exec = async (file, args) => { calls.push(args.join(' ')); return 'aaa\x1faa\x1fs\x1fN\x1f2026-08-05\n'; };
+  const r = await fullLog('/proj', { limit: 50, skip: 100 }, exec);
+  assert.equal(r.length, 1);
+  assert.ok(calls[0].includes('-n 50'));
+  assert.ok(calls[0].includes('--skip=100'));
+  assert.equal(calls.length, 1); // un solo comando: nada de git show por commit
 });
