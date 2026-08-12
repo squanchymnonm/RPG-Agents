@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { GitStatus, GitFile, DiffBase } from '../composables/useGit'
+import type { GitStatus, GitFile, DiffBase, StashEntry } from '../composables/useGit'
 
-const props = defineProps<{ status: GitStatus }>()
+const props = defineProps<{ status: GitStatus; stash: StashEntry[] }>()
 const emit = defineEmits<{
-  (e: 'run', name: string, payload?: { paths?: string[]; message?: string }, confirmMsg?: string): void
+  (e: 'run', name: string, payload?: { paths?: string[]; message?: string; index?: number }, confirmMsg?: string): void
   (e: 'diff', file: string, base: DiffBase): void
 }>()
 
 const commitMsg = ref('')
+const stashMsg = ref('')
 function paths(list: GitFile[]) { return list.map((f) => f.rel) }
 function doCommit() {
   if (!commitMsg.value.trim()) return
@@ -60,6 +61,22 @@ function doCommit() {
     </ul>
   </div>
 
+  <div class="g-group">
+    <h4>Stash ({{ props.stash.length }})
+      <button class="g-mini" @click="emit('run', 'stash-push', { message: stashMsg })">guardar</button>
+    </h4>
+    <input v-model="stashMsg" class="gw-stash-msg" placeholder="etiqueta del stash (opcional)" />
+    <ul>
+      <li v-for="s in props.stash" :key="s.index">
+        <span class="g-st">≡</span>
+        <span class="gw-flat">{{ s.message }}</span>
+        <button class="g-mini" @click="emit('run', 'stash-apply', { index: s.index })">aplicar</button>
+        <button class="g-mini g-danger"
+          @click="emit('run', 'stash-drop', { index: s.index }, 'Borrar este stash? No se puede deshacer.')">⌦</button>
+      </li>
+    </ul>
+  </div>
+
   <div class="g-commit">
     <input v-model="commitMsg" placeholder="mensaje de commit" @keyup.enter="doCommit" />
     <button class="g-act" :disabled="!commitMsg.trim()" @click="doCommit">Commit</button>
@@ -69,4 +86,6 @@ function doCommit() {
 <style scoped>
 .g-commit { display: flex; gap: .4rem; margin-top: .5rem; }
 .g-commit input { flex: 1; padding: .5rem; min-height: 44px; background: var(--color-raise, #2a2018); color: inherit; border: 1px solid var(--color-line, #3a2e22); border-radius: var(--radius-sm, 4px); }
+.gw-stash-msg { width: 100%; padding: .4rem; min-height: 36px; background: var(--color-raise, #2a2018); color: inherit; border: 1px solid var(--color-line, #3a2e22); border-radius: var(--radius-sm, 4px); margin-bottom: .3rem; }
+.gw-flat { flex: 1; }
 </style>

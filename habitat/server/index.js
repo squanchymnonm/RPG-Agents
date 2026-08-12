@@ -16,6 +16,7 @@ import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWor
 import { workingStatus, branchOverview, commits as gitCommits, filePatch } from './git-read.js';
 import * as gitWrite from './git-write.js';
 import * as gitBranches from './git-branches.js';
+import * as gitStash from './git-stash.js';
 import { createLocks } from './locks.js';
 import { worktreePaths, worktreeName } from './worktree.js';
 import { resolveWithinRoot, sanitizeFilename, uniqueName, maxUploadBytes } from './files.js';
@@ -388,6 +389,18 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/git/stash') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await gitStash.stashList(repo.dir);
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/git/diff') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
@@ -410,7 +423,7 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       if (!repo) return;
       let body;
       try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
-      const { action, paths, message, branch, from } = body || {};
+      const { action, paths, message, branch, from, index } = body || {};
       if (paths !== undefined) {
         if (!Array.isArray(paths)) { res.writeHead(400).end(); return; }
         for (const p of paths) {
@@ -432,6 +445,9 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
             case 'abort': return gitWrite.abort(repo.dir);
             case 'checkout': return gitBranches.checkout(repo.dir, branch);
             case 'branch-create': return gitBranches.createBranch(repo.dir, branch, from);
+            case 'stash-push': return gitStash.stashPush(repo.dir, message);
+            case 'stash-apply': return gitStash.stashApply(repo.dir, index);
+            case 'stash-drop': return gitStash.stashDrop(repo.dir, index);
             default: return null; // acción desconocida
           }
         });

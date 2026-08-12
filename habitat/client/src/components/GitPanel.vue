@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
-import { useGit, type DiffBase } from '../composables/useGit'
+import { useGit, type DiffBase, type StashEntry } from '../composables/useGit'
 import { parseDiff, type DiffHunk } from '../composables/parseDiff'
 import { useSessions } from '../stores/sessions'
 import GitWork from './GitWork.vue'
@@ -13,15 +13,22 @@ import '../styles/git.css'
 const props = defineProps<{ id: string; path: string }>()
 
 const store = useSessions()
-const { status, loading, error, loadStatus, loadDiff, action } = useGit()
+const { status, loading, error, loadStatus, loadDiff, loadStash, action } = useGit()
 
 const tab = ref<'work' | 'branches' | 'commits' | 'branch'>('work')
 const branchesEl = ref<InstanceType<typeof GitBranches> | null>(null)
 const diff = ref<{ file: string; hunks: DiffHunk[]; binary: boolean } | null>(null)
 const busy = ref('')
 const actionErr = ref('')
+const stash = ref<StashEntry[]>([])
+// Cuando el checkout falla por árbol sucio, ofrecemos la salida útil en vez de
+// dejar al usuario con un error de git.
+const retry = ref<{ branch: string } | null>(null)
 
-async function refresh() { await loadStatus(props.id, props.path) }
+async function refresh() {
+  await loadStatus(props.id, props.path)
+  stash.value = await loadStash(props.id, props.path)
+}
 
 async function openDiff(file: string, base: DiffBase) {
   diff.value = null
@@ -36,9 +43,23 @@ async function run(name: string, payload: Record<string, unknown> = {}, confirmM
   busy.value = name; actionErr.value = ''
   const r = await action(props.id, name, { path: props.path, ...payload })
   busy.value = ''
-  if (!r.ok) actionErr.value = r.conflict ? `Conflicto en: ${(r.files ?? []).join(', ')}` : (r.message || 'falló')
+  if (!r.ok) {
+    actionErr.value = r.conflict ? `Conflicto en: ${(r.files ?? []).join(', ')}` : (r.message || 'falló')
+    retry.value = r.dirty && name === 'checkout' ? { branch: payload.branch as string } : null
+  } else {
+    retry.value = null
+  }
   await refresh()
   await branchesEl.value?.refresh()
+}
+
+async function stashAndRetry() {
+  const branch = retry.value?.branch
+  if (!branch) return
+  retry.value = null
+  const s = await action(props.id, 'stash-push', { path: props.path, message: `auto antes de ir a ${branch}` })
+  if (!s.ok) { actionErr.value = s.message || 'no se pudo stashear'; return }
+  await run('checkout', { branch })
 }
 
 // Refresh live: cada broadcast WS hace store.upsert -> la sesión seleccionada
@@ -69,10 +90,13 @@ defineExpose({ repoLabel, refresh })
 
     <p v-if="error" class="g-err">{{ error === 'sin-dir' ? 'sin repo git acá' : error }}</p>
     <p v-if="actionErr" class="g-err">{{ actionErr }}</p>
+    <p v-if="retry" class="g-err">
+      <button class="g-mini" @click="stashAndRetry">Stashear y reintentar</button>
+    </p>
     <p v-if="loading" class="g-muted">cargando…</p>
 
     <div v-if="status" class="gp-body">
-      <GitWork v-if="tab === 'work'" :status="status" @run="run" @diff="openDiff" />
+      <GitWork v-if="tab === 'work'" :status="status" :stash="stash" @run="run" @diff="openDiff" />
       <GitBranchDiff v-else-if="tab === 'branch'" :status="status" @diff="openDiff" />
       <GitBranches v-else-if="tab === 'branches'" ref="branchesEl" :id="props.id" :path="props.path" @run="run" />
       <GitCommits v-else :status="status" @diff="openDiff" />

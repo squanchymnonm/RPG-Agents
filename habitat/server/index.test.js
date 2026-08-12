@@ -1248,6 +1248,46 @@ test('POST /git/action con acción desconocida -> 400', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('stash: push, list y pop por endpoint', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const post = (body) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify(body),
+  });
+  writeFileSync(join(dir, 'a.js'), 'const a = 99\n'); // sucia el árbol
+  assert.equal((await (await post({ action: 'stash-push', message: 'wip' })).json()).ok, true);
+  const list = await (await fetch(`http://127.0.0.1:${port}/git/stash?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  })).json();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].index, 0);
+  assert.ok(list[0].message.includes('wip'));
+  assert.equal((await (await post({ action: 'stash-apply', index: 0 })).json()).ok, true);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('stash-apply con índice no numérico -> ok:false', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'stash-apply', index: 'x' }),
+  });
+  assert.equal((await res.json()).ok, false);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('GET /git/status con path scopea al sub-repo y devuelve repo', async () => {
   const { dir, git } = tmpRepo();
   // sub-repo anidado en back/

@@ -19,7 +19,8 @@ export interface GitCommit { sha: string; shortSha: string; subject: string; pus
 export interface GitWorking { staged: GitFile[]; unstaged: GitFile[]; untracked: GitFile[]; conflicted: GitFile[] }
 export interface GitRepo { rel: string; name: string }
 export interface GitStatus { working: GitWorking; overview: GitOverview; commits: GitCommit[]; repo: GitRepo }
-export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string }
+export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string; dirty?: boolean; branch?: string }
+export interface StashEntry { index: number; message: string }
 export type DiffBase = 'working' | 'staged' | 'branch' | `commit:${string}`
 
 export function useGit() {
@@ -53,6 +54,12 @@ export function useGit() {
     return (await res.json()) as BranchList
   }
 
+  async function loadStash(id: string, path?: string): Promise<StashEntry[]> {
+    const res = await fetch(`/git/stash?${q(id, path)}`, { headers: authHeaders() })
+    if (!res.ok) return []
+    return (await res.json()) as StashEntry[]
+  }
+
   async function action(
     id: string,
     actionName: string,
@@ -68,5 +75,5 @@ export function useGit() {
     return (await res.json()) as GitActionResult
   }
 
-  return { status, loading, error, loadStatus, loadDiff, loadBranches, action }
+  return { status, loading, error, loadStatus, loadDiff, loadBranches, loadStash, action }
 }
