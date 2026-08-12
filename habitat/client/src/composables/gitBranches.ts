@@ -1,7 +1,13 @@
 export interface BranchRow { name: string; worktree: string; current: boolean }
 export interface BranchList { current: string; default: string; local: BranchRow[]; remote: string[] }
 
-const base = (p: string) => p.slice(p.replace(/\/+$/, '').lastIndexOf('/') + 1)
+// basename tolerante a barras finales: recorta y busca el índice sobre el
+// MISMO string (antes se calculaba el índice sobre el recortado pero el
+// slice se aplicaba sobre el original, dejando la barra colgando).
+const base = (p: string) => {
+  const trimmed = p.replace(/\/+$/, '')
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1)
+}
 
 // Agrupa para la UI: takenBy nombra la sesión que ya tiene la branch checked out
 // (git rechazaría el checkout), y las remotas que ya tienen local se esconden

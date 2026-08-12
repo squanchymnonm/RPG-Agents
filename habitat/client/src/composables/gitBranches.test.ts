@@ -12,6 +12,19 @@ const data = {
   remote: ['origin/main', 'origin/shepard'],
 }
 
+const dataTrailingSlash = {
+  ...data,
+  local: [
+    ...data.local.slice(0, 2),
+    { name: 'dante', worktree: '/wt/RPG/dante/', current: false },
+  ],
+}
+
+const dataUpstreamRemote = {
+  ...data,
+  remote: ['origin/main', 'upstream/foo'],
+}
+
 describe('groupBranches', () => {
   it('marca takenBy con el nombre de la sesión que tiene la branch', () => {
     const { local } = groupBranches(data, '')
@@ -33,5 +46,15 @@ describe('groupBranches', () => {
     expect(groupBranches(data, 'dan').local.map((b) => b.name)).toEqual(['dante'])
     expect(groupBranches(data, 'shep').remote.map((r) => r.short)).toEqual(['shepard'])
     expect(groupBranches(data, 'zzz').local).toEqual([])
+  })
+
+  it('takenBy no arrastra la barra final del worktree', () => {
+    const { local } = groupBranches(dataTrailingSlash, '')
+    expect(local.find((b) => b.name === 'dante')?.takenBy).toBe('dante')
+  })
+
+  it('remote.short sale bien con un remote que no es origin', () => {
+    const { remote } = groupBranches(dataUpstreamRemote, '')
+    expect(remote.map((r) => r.short)).toEqual(['foo'])
   })
 })
