@@ -1,4 +1,4 @@
-import { currentBranch, remoteDefaultBranch, validBranch, defaultExec } from './git.js';
+import { currentBranch, remoteDefaultBranch, validBranch, defaultExec, REMOTE_PREFIX, NET_TIMEOUT_MS } from './git.js';
 import { trimErr } from './git-write.js';
 
 // Extrae la URL del *PR*, no la primera URL del texto: gh mete de todo antes
@@ -8,14 +8,12 @@ import { trimErr } from './git-write.js';
 // y el punto quedaban dentro del link).
 const prUrl = (s) => (String(s).match(/https:\/\/\S*?\/pull\/\d+/) || [null])[0];
 
-// remoteDefaultBranch siempre usa el remoto 'origin' explícitamente (lee/setea
-// refs/remotes/origin/HEAD), así que cuando resuelve bien devuelve algo con ese
-// prefijo literal ('origin/main'). Si no hay origin/HEAD y tampoco se puede
-// resolver, cae a currentBranch(cwd) tal cual, sin prefijo: pelar por la
-// primera '/' a ciegas ahí mutila un nombre de rama con barras (p.ej.
+// REMOTE_PREFIX sale de git.js (único punto de verdad del contrato dual de
+// remoteDefaultBranch): cuando resuelve bien devuelve 'origin/main', y si no hay
+// origin/HEAD resoluble cae a currentBranch(cwd) tal cual, sin prefijo. Pelar por
+// la primera '/' a ciegas ahí mutila un nombre de rama con barras (p.ej.
 // 'feature/x' -> 'x'), que además puede coincidir con una rama real y abrir el
 // PR contra una base equivocada.
-const REMOTE_PREFIX = 'origin/';
 
 // Crea el PR con gh. No pushea por su cuenta: si falta pushear, el cliente
 // deshabilita el botón. Tampoco intenta autenticar desde la web.
@@ -31,7 +29,9 @@ export async function prCreate(cwd, exec = defaultExec) {
     return { ok: false, message: 'no se pudo determinar la rama base del PR (¿falta configurar el remoto o origin/HEAD?)' };
   }
   try {
-    const out = await exec('gh', ['pr', 'create', '--base', base, '--head', head, '--fill'], { cwd });
+    // `gh pr create` habla con la API de GitHub: con la red caída se cuelga, y corre
+    // con el lock del repo tomado. timeout acota cuánto queda tomado ese lock.
+    const out = await exec('gh', ['pr', 'create', '--base', base, '--head', head, '--fill'], { cwd, timeout: NET_TIMEOUT_MS });
     return { ok: true, url: prUrl(out) || '' };
   } catch (e) {
     if (e && e.code === 'ENOENT') {

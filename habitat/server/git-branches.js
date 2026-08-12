@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { validBranch, currentBranch, remoteDefaultBranch, defaultExec } from './git.js';
+import { validBranch, currentBranch, remoteDefaultBranch, defaultExec, REMOTE_PREFIX } from './git.js';
 import { trimErr, gitOk } from './git-write.js';
 
 // Parsea `git branch --list --format='%(refname:short)\t%(worktreepath)\t%(HEAD)'`.
@@ -70,13 +70,18 @@ export async function createBranch(cwd, branch, from, exec = defaultExec) {
   if (!validBranch(branch)) return { ok: false, message: 'nombre de rama inválido' };
   let start = 'HEAD';
   if (from === 'default') {
-    start = await remoteDefaultBranch(cwd, exec);
-    if (!start || String(start).startsWith('-')) return { ok: false, message: 'rama default inválida' };
+    const def = String(await remoteDefaultBranch(cwd, exec));
+    // Mismo guard que mergeDefault: sin origin/HEAD resoluble, remoteDefaultBranch
+    // cae a la rama actual (sin prefijo 'origin/'), así que "desde default" se
+    // comportaba como "desde HEAD" sin avisarle a nadie. Mejor fallar explícito.
+    if (!def.startsWith(REMOTE_PREFIX)) {
+      return { ok: false, message: 'no se pudo determinar la rama default del remoto (¿falta configurar el remoto o origin/HEAD?)' };
+    }
+    if (!validBranch(def.slice(REMOTE_PREFIX.length))) return { ok: false, message: 'rama default inválida' };
+    start = def;
   } else if (from !== 'HEAD') {
     return { ok: false, message: 'origen inválido' };
   }
   const r = await gitOk(cwd, ['checkout', '-b', branch, start], exec);
   return r.ok ? { ok: true, branch } : r;
 }
-
-export { defaultExec };

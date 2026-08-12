@@ -120,3 +120,37 @@ test('createBranch rechaza nombre inválido', async () => {
   assert.equal((await createBranch('/proj', '--force', 'HEAD', exec)).ok, false);
   assert.equal(called, false);
 });
+
+// --- I1: createBranch(from='default') partía remoteDefaultBranch a ciegas ---
+// Sin origin/HEAD resoluble, remoteDefaultBranch cae a la rama actual (sin prefijo
+// 'origin/'), así que "desde default" se comportaba como "desde HEAD" sin avisar.
+test('createBranch desde default falla explícito si no hay origin/HEAD (no cae a HEAD en silencio)', async () => {
+  const calls = [];
+  const exec = async (file, args) => {
+    const a = args.join(' ');
+    calls.push(a);
+    if (a.includes('symbolic-ref')) throw new Error('fatal: no es un symbolic ref');
+    if (a.includes('remote set-head')) throw new Error('fatal: could not read from remote repository');
+    if (a.includes('--abbrev-ref HEAD')) return 'main\n';
+    return '';
+  };
+  const r = await createBranch('/proj', 'nueva', 'default', exec);
+  assert.equal(r.ok, false);
+  assert.ok(/no se pudo determinar la rama default/.test(r.message), r.message);
+  assert.ok(!calls.some((c) => c.includes('checkout -b')), 'no debe crear la rama desde una base inventada');
+});
+
+test('createBranch desde default con una rama actual con barras tampoco la mutila', async () => {
+  const calls = [];
+  const exec = async (file, args) => {
+    const a = args.join(' ');
+    calls.push(a);
+    if (a.includes('symbolic-ref')) throw new Error('fatal: no es un symbolic ref');
+    if (a.includes('remote set-head')) throw new Error('fatal: offline');
+    if (a.includes('--abbrev-ref HEAD')) return 'feature/x\n';
+    return '';
+  };
+  const r = await createBranch('/proj', 'nueva', 'default', exec);
+  assert.equal(r.ok, false);
+  assert.ok(!calls.some((c) => c.includes('checkout -b nueva x')));
+});

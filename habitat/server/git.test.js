@@ -3,7 +3,29 @@ import assert from 'node:assert/strict';
 import {
   validBranch, branchExists, worktreeAdd, worktreeRemove, findNestedRepos,
   currentBranch, remoteDefaultBranch, ensureContainerRepo, containerWorktreeAdd, resolveRepo,
+  defaultExec, REMOTE_PREFIX,
 } from './git.js';
+import { defaultExec as execRead } from './git-read.js';
+import { defaultExec as execWrite } from './git-write.js';
+import * as gitBranchesMod from './git-branches.js';
+
+// --- I4: había tres defaultExec distintos, dos con aridad 2 ---
+// Con aridad 2 el tercer argumento se descartaba sin error: `gh pr create` corría en
+// el cwd del proceso del server (abriría el PR del repo de Hábitat en vez del del
+// usuario) y no había forma de pasarle `timeout` a las operaciones de red.
+test('todos los módulos git comparten el MISMO defaultExec, con aridad 3 (file, args, opts)', () => {
+  assert.equal(execRead, defaultExec, 'git-read.js debe reusar el de git.js');
+  assert.equal(execWrite, defaultExec, 'git-write.js debe reusar el de git.js');
+  assert.equal(defaultExec.length, 3, 'debe aceptar opts (cwd/timeout)');
+});
+
+test('git-branches.js no re-exporta defaultExec (re-export muerto)', () => {
+  assert.equal('defaultExec' in gitBranchesMod, false);
+});
+
+test('REMOTE_PREFIX es el prefijo literal que usa remoteDefaultBranch', () => {
+  assert.equal(REMOTE_PREFIX, 'origin/');
+});
 
 test('validBranch acepta nombres seguros y rechaza inválidos', () => {
   assert.equal(validBranch('feature/x'), true);
@@ -359,12 +381,24 @@ test('resolveRepo rechaza path que escapa del cwd', async () => {
   assert.equal(called, false); // ni siquiera invoca git
 });
 
-test('resolveRepo rechaza toplevel fuera del cwd (symlink)', async () => {
+test('resolveRepo rechaza toplevel fuera del cwd (symlink) y lo discrimina', async () => {
   // El path resuelve sintácticamente dentro, pero el repo real vive afuera.
   const exec = async () => '/otro/repo\n';
   const realpath = async (p) => (p === '/wt/link/enlace' ? '/otro/repo' : p);
   const r = await resolveRepo('/wt/link', 'enlace', { realpath }, exec);
-  assert.equal(r, null);
+  assert.equal(r.dir, undefined); // no se usa como repo: el guard NO se relaja
+  assert.equal(r.error, 'repo-afuera');
+});
+
+test('resolveRepo con el repo ARRIBA del cwd devuelve repo-arriba (no null pelado)', async () => {
+  // Sesión arrancada en un subdirectorio de un repo: el toplevel está por encima del
+  // límite del sandbox, así que sigue rechazado, pero el motivo es distinto de "acá no
+  // hay repo git" y el cliente tiene que poder decirlo.
+  const exec = async () => '/home/u/proj\n';
+  const realpath = async (p) => p;
+  const r = await resolveRepo('/home/u/proj/back/src', '', { realpath }, exec);
+  assert.equal(r.dir, undefined);
+  assert.equal(r.error, 'repo-arriba');
 });
 
 test('resolveRepo devuelve null si no hay repo git', async () => {

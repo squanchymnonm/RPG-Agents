@@ -193,3 +193,27 @@ test('fullLog pasa -n y --skip y no pide archivos por commit', async () => {
   assert.ok(calls[0].includes('--skip=100'));
   assert.equal(calls.length, 1); // un solo comando: nada de git show por commit
 });
+
+// --- Minor: clamp de limit/skip en fullLog ---
+// Sin truncar, '-n 2.5' lo rechaza git y el catch devuelve [] (indistinguible de "no
+// hay commits"), y '--skip=Infinity' git lo parsea como 0 y resetea la página.
+test('fullLog trunca limit/skip fraccionarios en vez de serializarlos crudos', async () => {
+  const calls = [];
+  const exec = async (file, args) => { calls.push(args.join(' ')); return ''; };
+  await fullLog('/proj', { limit: 2.5, skip: 7.9 }, exec);
+  assert.ok(calls[0].includes('-n 2'), calls[0]);
+  assert.ok(calls[0].includes('--skip=7'), calls[0]);
+  assert.ok(!/\d\.\d/.test(calls[0]), `no debe quedar ningún fraccionario: ${calls[0]}`);
+});
+
+test('fullLog cae a los defaults con valores no finitos (Infinity, NaN)', async () => {
+  const calls = [];
+  const exec = async (file, args) => { calls.push(args.join(' ')); return ''; };
+  await fullLog('/proj', { limit: Infinity, skip: Infinity }, exec);
+  assert.ok(calls[0].includes('-n 50'), calls[0]);
+  assert.ok(calls[0].includes('--skip=0'), calls[0]);
+  calls.length = 0;
+  await fullLog('/proj', { limit: 'abc', skip: 'xyz' }, exec);
+  assert.ok(calls[0].includes('-n 50'), calls[0]);
+  assert.ok(calls[0].includes('--skip=0'), calls[0]);
+});

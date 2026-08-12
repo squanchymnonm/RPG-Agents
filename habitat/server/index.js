@@ -101,14 +101,21 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
 
   // Resuelve el repo scopeado por ?path=. Escribe la respuesta de error y devuelve
   // null si no se puede. 400 = el path escapa del worktree (input inválido);
-  // 409 = no hay sesión/cwd, o ahí no hay repo git (estado, no input). El cliente
-  // muestra el 409 como "sin repo git acá".
+  // 409 = no hay sesión/cwd, o ahí no hay repo git usable (estado, no input).
+  // El 409 lleva cuerpo { reason } para que el cliente pueda decir POR QUÉ: antes
+  // mostraba "sin repo git acá" incluso cuando SÍ había repo y el motivo real era
+  // que su raíz cae fuera del alcance de la sesión (ver resolveRepo en git.js).
+  function conflict(res, reason) {
+    res.writeHead(409, { 'content-type': 'application/json' }).end(JSON.stringify({ reason }));
+    return null;
+  }
   async function resolveRepoOr(res, s, url) {
-    if (!s || !s.cwd) { res.writeHead(409).end(); return null; }
+    if (!s || !s.cwd) return conflict(res, 'sin-sesion');
     const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '');
     if (resolveWithinRoot(s.cwd, rel) === null) { res.writeHead(400).end(); return null; }
     const repo = await resolveRepo(s.cwd, rel);
-    if (!repo) { res.writeHead(409).end(); return null; }
+    if (!repo) return conflict(res, 'sin-repo');
+    if (repo.error) return conflict(res, repo.error);
     return repo;
   }
 
@@ -479,11 +486,15 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       // esperar al próximo hook. hooks-logic lo reconfirma después. persist() para
       // que sobreviva un reinicio, y broadcast para que la card (SessionPod, que
       // pinta session.branch del snapshot de WS) lo muestre ya, no en el próximo hook.
+      // Se muta la MISMA referencia en vez de upsertear una copia ({ ...s, branch }):
+      // la copia reemplaza el objeto sesión entero por un snapshot potencialmente
+      // viejo y pierde cualquier campo que otro handler (hooks) haya escrito
+      // mientras la acción git estaba en vuelo.
       if (r.ok && r.branch && s.cwd === repo.dir) {
-        const updated = { ...s, branch: r.branch };
-        store.upsert(updated);
+        s.branch = r.branch;
+        store.upsert(s);
         store.persist();
-        hub.broadcast({ type: 'session', session: snapOf(updated) });
+        hub.broadcast({ type: 'session', session: snapOf(s) });
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r));
       return;

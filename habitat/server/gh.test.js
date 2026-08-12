@@ -167,3 +167,35 @@ test('prCreate no arrastra puntuación pegada ni URLs ajenas cuando el PR ya exi
   assert.equal(r.url, 'https://github.com/o/r/pull/3');
   assert.ok(/ya existe/.test(r.message));
 });
+
+// --- I4/I6: opts del exec de gh ---
+// prCreate corre `gh` directamente (sin -C): necesita el cwd real en los opts, y sin
+// timeout se cuelga con el lock del repo tomado. Con el defaultExec de aridad 2 que
+// tenían git-read/git-write ese tercer argumento se descartaba en silencio y el PR se
+// habría abierto en el repo del proceso del server.
+test('prCreate pasa cwd y timeout en los opts del exec de gh', async () => {
+  let ghOpts;
+  const exec = async (file, args, opts) => {
+    const g = gitStub(args.join(' '));
+    if (g !== null) return g;
+    if (file === 'gh') { ghOpts = opts; return 'https://github.com/o/r/pull/7\n'; }
+    return '';
+  };
+  await prCreate('/proj', exec);
+  assert.equal(ghOpts.cwd, '/proj');
+  assert.ok(typeof ghOpts.timeout === 'number' && ghOpts.timeout > 0);
+});
+
+test('prCreate traduce el timeout a un mensaje en español', async () => {
+  const exec = async (file, args) => {
+    const g = gitStub(args.join(' '));
+    if (g !== null) return g;
+    if (file !== 'gh') return '';
+    const e = new Error('Command failed: gh pr create');
+    e.killed = true; e.signal = 'SIGTERM';
+    throw e;
+  };
+  const r = await prCreate('/proj', exec);
+  assert.equal(r.ok, false);
+  assert.ok(/tardó demasiado/.test(r.message), r.message);
+});

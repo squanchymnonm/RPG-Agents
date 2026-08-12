@@ -1244,6 +1244,7 @@ test('POST /git/action checkout persiste el branch de la sesión y lo difunde po
   const broadcasts = [];
   const origBroadcast = hub.broadcast.bind(hub);
   hub.broadcast = (msg) => { broadcasts.push(msg); origBroadcast(msg); };
+  const before = store.get('s1');
   const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
@@ -1253,6 +1254,10 @@ test('POST /git/action checkout persiste el branch de la sesión y lo difunde po
   assert.equal((await res.json()).ok, true);
   // el store en memoria refleja el branch nuevo, no sólo la respuesta HTTP
   assert.equal(store.get('s1').branch, 'main');
+  // …y sobre la MISMA referencia: upsertear una copia ({ ...s, branch }) reemplaza el
+  // objeto sesión entero por un snapshot potencialmente viejo y descarta lo que otro
+  // handler haya escrito mientras la acción git estaba en vuelo (lost update).
+  assert.equal(store.get('s1'), before, 'debe mutar la sesión, no reemplazarla por una copia');
   // se difundió por WS: la card (SessionPod) pinta session.branch del snapshot,
   // no espera al próximo hook
   assert.ok(broadcasts.some((m) => m.type === 'session' && m.session.branch === 'main'));
@@ -1297,7 +1302,11 @@ test('POST /git/action con acción desconocida -> 400', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('POST /git/action pr-create devuelve ok:false con mensaje si no hay gh usable', async () => {
+// El repo temporal no tiene remoto, así que prCreate corta en su propio guard
+// (base === head, porque remoteDefaultBranch cae a la rama actual) y NUNCA llega a
+// invocar el binario `gh`. Lo que este test cubre es que ese camino responde 200 con
+// ok:false + mensaje, en vez de reventar en 500.
+test('POST /git/action pr-create sin remoto -> 200 con ok:false y mensaje (no 500)', async () => {
   const { dir } = tmpRepo();
   const store = createStore();
   store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
@@ -1411,8 +1420,41 @@ test('GET /git/status en un cwd sin repo git -> 409', async () => {
     headers: { authorization: 'Bearer secret' },
   });
   assert.equal(res.status, 409); // el cliente lo muestra como "sin repo git acá"
+  assert.equal((await res.json()).reason, 'sin-repo');
   server.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- I5: el repo está ARRIBA del cwd de la sesión ---
+// Una sesión arrancada en un subdirectorio del repo sigue sin acceso (s.cwd es el
+// límite del sandbox y el guard no se relaja), pero el 409 tiene que decir el motivo
+// real: antes la UI mostraba "sin repo git acá" cuando SÍ había repo.
+test('GET /git/status con el repo por encima del cwd de la sesión -> 409 reason repo-arriba', async () => {
+  const { dir } = tmpRepo();
+  const sub = join(dir, 'sub');
+  mkdirSync(sub);
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: sub, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'repo-arriba');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status sin sesión -> 409 reason sin-sesion', async () => {
+  const { server } = createApp({ config, store: createStore() });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=nope`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'sin-sesion');
+  server.close();
 });
 
 test('GET /tree lista todo incluyendo dotfiles y .git', async () => {

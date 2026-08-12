@@ -105,3 +105,103 @@ test('amend con mensaje usa -m, sin mensaje usa --no-edit', async () => {
   await amend('/proj', '', exec);
   assert.equal(calls[1], '-C /proj commit --amend --no-edit');
 });
+
+// --- I1: mergeDefault partía remoteDefaultBranch a ciegas ---
+// remoteDefaultBranch tiene contrato dual: 'origin/main' cuando resuelve, y la rama
+// actual SIN prefijo cuando no hay origin/HEAD resoluble (repo sin remoto, u offline
+// cuando corre `remote set-head`). Sin el guard de prefijo, el botón "↻ Actualizar"
+// era un no-op silencioso (ok:true sin traer nada) o fallaba con un error críptico.
+
+// exec que simula un repo sin origin/HEAD resoluble, parado en `branch`.
+const sinOriginHead = (branch, calls) => async (file, args) => {
+  const a = args.join(' ');
+  calls.push(a);
+  if (a.includes('symbolic-ref')) throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
+  if (a.includes('remote set-head')) throw new Error('fatal: could not read from remote repository');
+  if (a.includes('--abbrev-ref HEAD')) return `${branch}\n`;
+  return '';
+};
+
+test('mergeDefault sin origin/HEAD no mergea nada y avisa (rama sin barras: era ok:true silencioso)', async () => {
+  const calls = [];
+  const r = await mergeDefault('/proj', sinOriginHead('main', calls));
+  assert.equal(r.ok, false);
+  assert.ok(/no se pudo determinar la rama default/.test(r.message), r.message);
+  assert.ok(!calls.some((c) => c.includes('merge')), 'no debe mergear contra una base inventada');
+  assert.ok(!calls.some((c) => c.startsWith('-C /proj fetch')), 'no debe fetchear una base inventada');
+});
+
+test('mergeDefault sin origin/HEAD no mutila una rama con barras (era `fetch feature x`)', async () => {
+  const calls = [];
+  const r = await mergeDefault('/proj', sinOriginHead('feature/x', calls));
+  assert.equal(r.ok, false);
+  assert.ok(/no se pudo determinar la rama default/.test(r.message), r.message);
+  assert.ok(!calls.some((c) => c.includes('fetch feature x')));
+});
+
+test('mergeDefault con origin/HEAD resuelto sigue fetcheando y mergeando', async () => {
+  const calls = [];
+  const exec = async (file, args) => {
+    const a = args.join(' ');
+    calls.push(a);
+    if (a.includes('symbolic-ref')) return 'origin/main\n';
+    return '';
+  };
+  const r = await mergeDefault('/proj', exec);
+  assert.equal(r.ok, true);
+  assert.ok(calls.some((c) => c === '-C /proj fetch origin main'));
+  assert.ok(calls.some((c) => c === '-C /proj merge --no-edit origin/main'));
+});
+
+// --- I6: timeout en las operaciones de red ---
+// Sin timeout, un remoto inalcanzable cuelga minutos con el lock del repo tomado y
+// cualquier otra escritura sobre ese repo recibe 409 todo ese tiempo.
+
+test('fetch, pull y push pasan timeout en los opts del exec', async () => {
+  const opts = [];
+  const exec = async (file, args, o) => { opts.push(o); return ''; };
+  await fetchRemote('/proj', exec);
+  await pull('/proj', exec);
+  await push('/proj', exec);
+  assert.equal(opts.length, 3);
+  for (const o of opts) {
+    assert.ok(o && typeof o.timeout === 'number' && o.timeout > 0, `opts sin timeout: ${JSON.stringify(o)}`);
+  }
+});
+
+test('el fetch de mergeDefault pasa timeout (el merge, que es local, no lo necesita)', async () => {
+  const seen = [];
+  const exec = async (file, args, o) => {
+    const a = args.join(' ');
+    seen.push([a, o]);
+    if (a.includes('symbolic-ref')) return 'origin/main\n';
+    return '';
+  };
+  await mergeDefault('/proj', exec);
+  const fetchCall = seen.find(([a]) => a === '-C /proj fetch origin main');
+  assert.ok(fetchCall[1] && fetchCall[1].timeout > 0);
+});
+
+test('un exec matado por timeout devuelve un mensaje en español, no "Command failed"', async () => {
+  const exec = async () => {
+    const e = new Error('Command failed: git fetch --all --prune');
+    e.killed = true; e.signal = 'SIGTERM'; e.stderr = '';
+    throw e;
+  };
+  const r = await fetchRemote('/proj', exec);
+  assert.equal(r.ok, false);
+  assert.ok(/tardó demasiado/.test(r.message), r.message);
+});
+
+test('push no reintenta -u origin <branch> si el primer push venció por timeout', async () => {
+  const calls = [];
+  const exec = async (file, args) => {
+    calls.push(args.join(' '));
+    const e = new Error('Command failed: git push');
+    e.killed = true; e.signal = 'SIGTERM';
+    throw e;
+  };
+  const r = await push('/proj', exec);
+  assert.equal(r.ok, false);
+  assert.deepEqual(calls, ['-C /proj push'], 'un solo intento: no duplicar la espera con el lock tomado');
+});
