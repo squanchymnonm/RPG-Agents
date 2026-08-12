@@ -72,6 +72,82 @@ Complementos ya en el código que refuerzan esto:
   `uncaughtException`/`unhandledRejection` global. Una terminal muerta ya no tumba el server
   (que, con el cgroup, equivalía a tumbar todas las sesiones).
 
+## Si cerrás la terminal/SSH y se cae todo (linger)
+
+`KillMode=process` (arriba) protege el tmux server de un **restart del servicio**
+(deploy, crash-restart). No protege de esto otro, que es un problema distinto:
+
+Si `habitat` corre bajo `systemctl --user` (como en producción) y **cerrás la
+terminal/sesión SSH** desde la que quedó todo arrancado, systemd-logind da por
+terminada tu sesión de login. Sin **linger** habilitado, en cuanto no queda
+ninguna sesión activa tuya, logind **para el user-manager completo**
+(`user@<uid>.service`) — y con él mueren TODOS los procesos que cuelgan de ese
+manager: el servicio `habitat` y el **daemon de tmux** (con todas las sesiones
+`claude` corriendo adentro), sean o no `detached`. Que una sesión de tmux esté
+"detached" sólo significa que no tiene terminal controlador adjunta — no la
+saca del cgroup de tu sesión de usuario, así que igual muere con ella.
+
+**El fix es habilitar linger, no "más detach":**
+
+    sudo loginctl enable-linger mnonm
+    loginctl show-user mnonm -p Linger   # debe decir Linger=yes
+
+Con linger, el user-manager de `mnonm` (y todo lo que cuelga de él) sigue vivo
+aunque cierres todas las terminales/SSH. Sólo se cae con un reboot real de la
+máquina o si vos mismo bajás el servicio.
+
+### Checklist para diagnosticar un episodio de "se cerraron mis sesiones"
+
+1. `systemctl --user status habitat` → mirar el "Active: ... since <hace
+   cuánto>". Un uptime de pocos minutos sin que hayas corrido `habitat
+   restart`/`up` vos mismo es la señal de que el user-manager se reinició
+   (sesión de login cerrada sin linger, o reboot real).
+2. `tmux -L habitat ls` (o `HABITAT_TMUX_SOCKET` si se cambió el default) → si
+   tira error ("no server running on ...") o no lista las sesiones esperadas,
+   el daemon de tmux murió — aunque `habitat` (el server node) esté `active`.
+3. El panel de habitat va a seguir mostrando las branches "congeladas" en el
+   último estado conocido (lee `.state.json` al arrancar), pero no vas a poder
+   interactuar: no hay proceso vivo detrás hasta que se recreen las sesiones.
+
+### Recuperar sesiones perdidas (worktree + transcript sobreviven siempre)
+
+El daemon de tmux puede morir, pero el **git worktree** de cada rama y el
+**transcript de Claude Code** (`~/.claude/projects/.../<session-id>.jsonl`) son
+archivos en disco — sobreviven a cualquier caída de tmux o del server. Se puede
+resumir la conversación exacta donde quedó:
+
+1. Abrir `.state.json` (raíz de `HabitatProdu`, no confundir con
+   `.sessions.json` que son tokens de login) y ubicar el pod por rama. Sacar:
+   - `id` → session id de Claude Code
+   - `project` + `branch` → arman el nombre tmux: `<project>-<branch con "/"
+     reemplazado por "-">` (ver `worktree.js`)
+   - `cwd` → el worktree en disco
+2. Confirmar que sigue todo ahí:
+
+       ls "$cwd"                                              # el worktree
+       ls ~/.claude/projects/"$(echo "$cwd" | tr / -)"/        # debe listar <id>.jsonl
+
+3. Recrear la sesión tmux con el mismo nombre, mismo directorio, y resumir por
+   id (el `--permission-mode` debe matchear `.settings.json`, hoy
+   `acceptEdits`):
+
+       tmux -L habitat new-session -d -s "<project>-<branch>" -c "<cwd>"
+       tmux -L habitat send-keys -t "<project>-<branch>" -l "claude --permission-mode acceptEdits --resume <id>"
+       tmux -L habitat send-keys -t "<project>-<branch>" Enter
+
+4. Verificar que resumió con contexto (no una sesión en blanco):
+
+       tmux -L habitat capture-pane -p -t "<project>-<branch>" | tail -20
+
+5. Refrescar el panel — reconecta solo apenas Claude dispare el próximo hook.
+
+No uses `/spawn` (ni el botón "+ NUEVA SESIÓN") para esto: ese endpoint crea un
+**worktree y una rama nuevos**, sirve para arrancar de cero, no para recuperar
+una sesión existente.
+
+> Nada de esto reemplaza habilitar linger — sin eso, el mismo corte vuelve la
+> próxima vez que se cierre la terminal desde la que quedó arrancado.
+
 ## Desarrollo del front (HMR)
     cd habitat && HABITAT_TOKEN=<tu-token> npm start   # backend en :8377
     cd habitat/client && npm run dev                 # Vite en :5173, proxea /ws y /preview al backend
