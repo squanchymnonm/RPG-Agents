@@ -77,4 +77,14 @@ describe('canCreatePr', () => {
     expect(r.can).toBe(false)
     expect(r.why).toMatch(/default/)
   })
+
+  it('bloquea sin remoto configurado, con una rama con barras (default cae a currentBranch, sin prefijo origin/)', () => {
+    // remoteDefaultBranch sin origin/HEAD resuelto cae a currentBranch(cwd): 'default'
+    // termina siendo la misma rama actual, sin el prefijo 'origin/'. Pelar por la
+    // primera '/' a ciegas mutilaría 'feature/x' a 'x' y no detectaría que es la
+    // misma rama.
+    const r = canCreatePr({ ...base, branch: 'feature/x', default: 'feature/x' })
+    expect(r.can).toBe(false)
+    expect(r.why).toMatch(/default/)
+  })
 })

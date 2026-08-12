@@ -28,12 +28,21 @@ export function groupBranches(data: BranchList, filter: string) {
   }
 }
 
+// Mismo prefijo que gh.js (server/gh.js REMOTE_PREFIX): remoteDefaultBranch
+// sólo antepone 'origin/' cuando resuelve bien origin/HEAD. Si no hay remoto
+// configurado cae a currentBranch(cwd) tal cual, sin prefijo — y ahí
+// 'default' termina siendo la misma rama actual. Pelar por la primera '/' a
+// ciegas en ese caso mutila una rama con barras (p.ej. 'feature/x' -> 'x'),
+// que ya no coincide con 'branch' y deja el botón habilitado sin advertencia
+// aunque no haya, en los hechos, una base distinta.
+const REMOTE_PREFIX = 'origin/'
+
 // El botón sólo se bloquea de verdad estando en la rama default (un PR de main a
 // main no existe). Con commits por delante advierte pero deja intentar: `ahead`
 // cuenta contra el default, no contra origin/<branch>, así que no alcanza para
 // afirmar que falta pushear.
 export function canCreatePr(overview: GitOverview): { can: boolean; why: string } {
-  const def = overview.default.slice(overview.default.indexOf('/') + 1)
+  const def = overview.default.startsWith(REMOTE_PREFIX) ? overview.default.slice(REMOTE_PREFIX.length) : overview.default
   if (overview.branch === def) return { can: false, why: `estás en la rama default (${def})` }
   if (overview.ahead > 0) return { can: true, why: `${overview.ahead} commit(s) sin pushear: pusheá primero si gh falla` }
   return { can: true, why: '' }

@@ -103,3 +103,51 @@ describe('GitPanel — retry de checkout sucio', () => {
     expect(w.text()).not.toContain('Stashear y reintentar')
   })
 })
+
+// Rama distinta del default: a diferencia de statusBody (branch === default,
+// que deja el botón PR deshabilitado), acá el botón queda habilitado para
+// poder disparar 'pr-create' desde el test.
+const statusBodyOffDefault = {
+  ...statusBody,
+  overview: { ...statusBody.overview, branch: 'feature-x' },
+}
+
+function stubFetchWithPr() {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+    if (url.includes('/git/status')) return { ok: true, status: 200, json: async () => statusBodyOffDefault }
+    if (url.includes('/git/stash')) return { ok: true, status: 200, json: async () => [] }
+    if (url.includes('/git/branches')) return { ok: true, status: 200, json: async () => branchesBody }
+    if (url.includes('/git/action')) {
+      const body = JSON.parse(init.body)
+      if (body.action === 'pr-create') {
+        return { ok: true, status: 200, json: async () => ({ ok: true, url: 'https://github.com/x/y/pull/42' }) }
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    }
+    return { ok: true, status: 200, json: async () => ({}) }
+  }))
+}
+
+describe('GitPanel — prUrl no se filtra entre repos', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    stubFetchWithPr()
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('cambiar de path limpia el link del PR creado en el repo anterior', async () => {
+    const w = mount(GitPanel, { props: { id: 's1', path: '' } })
+    await flushPromises()
+
+    const prButton = w.findAll('.g-act').find((b) => b.text() === 'PR')
+    await prButton!.trigger('click')
+    await flushPromises()
+
+    expect(w.html()).toContain('pull/42') // precondición: el link quedó visible
+
+    await w.setProps({ path: 'otro/repo' })
+    await flushPromises()
+
+    expect(w.html()).not.toContain('pull/42')
+  })
+})

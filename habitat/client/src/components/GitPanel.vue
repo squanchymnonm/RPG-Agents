@@ -83,9 +83,13 @@ watch(() => store.list.find((s) => s.id === props.id), schedule)
 // "retry" (y el error que la originó) apuntan a la rama/repo que falló, que ya no
 // es el contexto activo — si no se limpia, "Stashear y reintentar" terminaría
 // operando sobre el repo/rama nuevos con el nombre de rama del contexto viejo.
+// prUrl tiene la misma fuga: es el link del PR del repo/rama anterior, y si no
+// se limpia queda visible apuntando a un PR que no tiene nada que ver con el
+// repo activo nuevo.
 watch(() => [props.id, props.path] as const, () => {
   retry.value = null
   actionErr.value = ''
+  prUrl.value = ''
   refresh()
 }, { immediate: true })
 onBeforeUnmount(() => { if (t) clearTimeout(t) })
