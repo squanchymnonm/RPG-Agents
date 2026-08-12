@@ -16,7 +16,7 @@
 - 👁️ **Real preview** — click a pod to see that session's terminal (tmux) live.
 - 💬 **Chat** — message a session from the panel (sent via `tmux send-keys`).
 - ➕ **Spawn sessions** — launch a new Claude Code session in a project, right from the header.
-- 🌿 **Git changes view** — see status, diff, stage/unstage/discard files, commit, push, pull, and merge, per session, right in the detail panel. Write actions are gated by `HABITAT_ALLOW_GIT_WRITE`.
+- 🌿 **Git panel** — status, diff, stage/unstage/discard, commit (with amend), push/pull/merge and fetch, per session, right in the detail panel. Plus branches (checkout, create), stash (save/apply/drop), full paginated history, and opening a PR via `gh`.
 - 📁 **Project explorer + embedded editor** — browse the session's file tree, preview files, and open them in nvim (via a dedicated tmux window) from the browser.
 - 🌙 **Mana + day/night cycle** — Claude's 5-hour usage window is represented as mana; the background shifts as the window fills and resets.
 - 📖 **Quest Book** — a per-session quest log and dialogue view, built from the TODO history.
@@ -31,7 +31,7 @@
 
 <table>
   <tr>
-    <td width="50%"><img src=".github/screenshot-git.png" alt="Per-session git changes view with status, diff and commit history" width="100%"><br><sub><b>Git changes</b> — status, diff, stage, commit, push & merge, per session.</sub></td>
+    <td width="50%"><img src=".github/screenshot-git.png" alt="Per-session git changes view with status, diff and commit history" width="100%"><br><sub><b>Git changes</b> — status, diff, stage, commit/amend, push/pull/merge, branches, stash and PRs, per session.</sub></td>
     <td width="50%"><img src=".github/screenshot-editor.png" alt="Project explorer with file tree and embedded editor preview" width="100%"><br><sub><b>Explorer + editor</b> — browse the tree, preview files, open them in nvim.</sub></td>
   </tr>
   <tr>
@@ -178,11 +178,11 @@ Your PC (browser)  ──SSH tunnel / VPN / Tailscale──▶  Server
 - **`habitat/server/`** — Node (ESM, no TypeScript), single dependency `ws`. HTTP serves the front + API endpoints; WebSocket pushes state. Tests with `node --test` (**229 passing**). RPG state is derived from hooks (TodoWrite → monster/quest; transcript tokens → damage/stamina; statusline → mana/usage window).
 - **`habitat/client/`** — Vue 3 + TypeScript + Vite. Builds to `habitat/web/` (served by the server).
 - **`habitat/hook/habitat-hook`** — forwards Claude Code events to the server.
-- **Security (Law 1):** Bearer token + loopback bind on every endpoint; spawning sessions additionally requires the `HABITAT_ALLOW_SPAWN` flag + a projects list managed from Settings. Git write actions require `HABITAT_ALLOW_GIT_WRITE`. tmux commands run via `execFile` (no shell). Never expose to the internet without a VPN or Tailscale.
+- **Security (Law 1):** Bearer token + loopback bind on every endpoint; spawning sessions additionally requires the `HABITAT_ALLOW_SPAWN` flag + a projects list managed from Settings. tmux commands run via `execFile` (no shell). Never expose to the internet without a VPN or Tailscale.
 
 Design specs and plans live in `docs/superpowers/`.
 
-**HTTP routes:** `/hooks` `/preview` `/projects` `/projects/browse` `/spawn` `/status` `/tree` `/file` `/files` `/files/upload` `/editor/open` `/git/status` `/git/diff` `/git/action` `/questbook` `/settings` `/login` `/logout` `/auth/me` `/term` `/ws`
+**HTTP routes:** `/hooks` `/preview` `/projects` `/projects/browse` `/spawn` `/status` `/tree` `/file` `/files` `/files/upload` `/editor/open` `/git/status` `/git/branches` `/git/stash` `/git/log` `/git/diff` `/git/action` `/questbook` `/settings` `/login` `/logout` `/auth/me` `/term` `/ws`
 
 ---
 
@@ -209,12 +209,6 @@ Design specs and plans live in `docs/superpowers/`.
 | `HABITAT_PROJECTS_STATE` | `.projects.json` | Path to persisted projects list. |
 | `HABITAT_WORKTREES_DIR` | `~/habitat-worktrees` | Root directory where git worktrees are created for spawned sessions. |
 | `HABITAT_TMUX_SOCKET` | `habitat` | tmux socket name (`-L`). Isolates Hábitat sessions from your personal tmux. |
-
-### Git
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `HABITAT_ALLOW_GIT_WRITE` | `0` | `1` enables write git actions (stage, unstage, discard, commit, push, pull, merge) from the panel. |
 
 ### Auth + login
 

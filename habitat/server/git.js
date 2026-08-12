@@ -4,10 +4,36 @@ import {
   readdir as fsReaddir, stat as fsStat,
   access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename, relative, sep } from 'node:path';
+import { realpath as fsRealpath } from 'node:fs/promises';
+import { resolveWithinRoot } from './files.js';
 
 const run = promisify(execFile);
-const defaultExec = async (file, args) => (await run(file, args)).stdout;
+// ÚNICO defaultExec de todo el stack git (git-read/git-write/git-branches/git-stash/gh
+// lo importan de acá). Antes había tres copias y dos con aridad 2: perdían el tercer
+// argumento en silencio, así que `gh pr create` corría en el cwd del proceso del server
+// y no había forma de pasar `timeout` a las operaciones de red.
+// `opts` (ej. { cwd }, { timeout }) es opcional: las funciones de git pasan `-C <dir>`
+// y no lo necesitan; promisify(execFile) acepta `undefined` de forma nativa, así que
+// los call sites de 2 argumentos siguen funcionando igual.
+const defaultExec = async (file, args, opts) => (await run(file, args, opts)).stdout;
+
+// Prefijo del remoto que usa remoteDefaultBranch: siempre lee/setea
+// refs/remotes/origin/HEAD, así que cuando resuelve bien devuelve 'origin/<rama>'.
+// Contrato dual: si NO hay origin/HEAD resoluble cae a currentBranch(repoDir) tal
+// cual, SIN prefijo. Pelar por la primera '/' a ciegas en ese caso mutila una rama
+// con barras ('feature/x' -> 'x') y ademas inventa una base que nadie pidió, así
+// que los consumidores tienen que chequear el prefijo con startsWith antes de pelar.
+// Único punto de verdad del prefijo (lo usan gh.js, git-write.js y git-branches.js).
+export const REMOTE_PREFIX = 'origin/';
+
+// Techo de duración de las operaciones que tocan la red (fetch/pull/push/gh). Sin
+// esto un remoto inalcanzable (ssh a un host caído) cuelga minutos, y como el
+// endpoint corre estas operaciones con el lock del repo tomado, cualquier otra
+// escritura sobre ese repo recibe 409 todo ese tiempo. 60s es holgado para un
+// fetch/push legítimo sobre una conexión lenta y acota el lock a algo tolerable.
+export const NET_TIMEOUT_MS = 60_000;
+export const NET_OPTS = { timeout: NET_TIMEOUT_MS };
 
 export function validBranch(branch) {
   const b = String(branch || '');
@@ -167,6 +193,44 @@ export async function containerWorktreeAdd(projectDir, branch, wtPath, nested, e
   return true;
 }
 
+// Traduce (cwd de la sesión, path relativo) al repo git que contiene ese path.
+// Único punto de verdad del scope de repo: lo usan todos los endpoints git.
+// Dos guards en capas: resolveWithinRoot es sintáctico (path traversal), y la
+// comparación de realpaths cubre symlinks que apunten a un repo de afuera
+// (--show-toplevel no garantiza forma canónica, así que se realpathean ambos).
+//
+// Devuelve { dir, rel, name } si el repo cae dentro del alcance de la sesión.
+// Si no, un discriminante para que la UI pueda decir POR QUÉ (antes todo era
+// `null` y el cliente mostraba "sin repo git acá" incluso cuando SÍ había repo):
+//   null                        -> ahí no hay repo git, o el path no existe/escapa
+//   { error: 'repo-arriba' }    -> hay repo, pero su raíz está por encima de cwd
+//   { error: 'repo-afuera' }    -> hay repo, pero su raíz está en otra rama del fs
+// El guard NO se relaja en ninguno de los dos casos: s.cwd es el límite del sandbox
+// que imponen los endpoints de archivos, y dejar que git escriba en un repo por
+// encima de ese límite lo escaparía. Sólo mejora el diagnóstico.
+export async function resolveRepo(cwd, rel, deps = {}, exec = defaultExec) {
+  const realpath = deps.realpath || fsRealpath;
+  const target = resolveWithinRoot(cwd, rel);
+  if (!target) return null;
+  let top;
+  try {
+    top = String(await exec('git', ['-C', target, 'rev-parse', '--show-toplevel'])).trim();
+  } catch {
+    return null; // no es repo git (o el path no existe)
+  }
+  if (!top) return null;
+  let realTop, realRoot;
+  try { realTop = await realpath(top); realRoot = await realpath(cwd); }
+  catch { return null; }
+  if (realTop !== realRoot && !realTop.startsWith(realRoot + sep)) {
+    // 'arriba' = el cwd de la sesión está contenido en el repo (sesión arrancada en
+    // un subdirectorio del repo). El resto es un repo en otra rama del filesystem
+    // (típicamente un symlink que apunta afuera).
+    return { error: realRoot.startsWith(realTop + sep) ? 'repo-arriba' : 'repo-afuera' };
+  }
+  return { dir: top, rel: relative(realRoot, realTop), name: basename(top) };
+}
+
 // Asegura que el contenedor sea un repo git que versiona lo no-git de la raíz (.claude, docs, …).
 // Idempotente. El .gitignore excluye cada sub-repo para que el worktree del padre no intente
 // materializarlos (ahí van los worktrees de los hijos). Commit con identidad explícita para no
@@ -204,3 +268,5 @@ export async function ensureContainerRepo(dir, nested, exec = defaultExec, deps 
     return false;
   }
 }
+
+export { defaultExec };

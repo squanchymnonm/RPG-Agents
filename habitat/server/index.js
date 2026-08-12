@@ -12,9 +12,13 @@ import { applyEvent, staminaFromStatus, usageFromStatus, dismissAlert } from './
 import { attachWs } from './ws.js';
 import { attachTerm } from './term.js';
 import { capturePane, sendKeys, gitBranch, listSessions, newTmuxSession, killTmuxSession } from './tmux.js';
-import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch } from './git.js';
-import { workingStatus, branchOverview, commits as gitCommits, filePatch } from './git-read.js';
+import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, resolveRepo } from './git.js';
+import { workingStatus, branchOverview, commits as gitCommits, filePatch, fullLog } from './git-read.js';
 import * as gitWrite from './git-write.js';
+import * as gitBranches from './git-branches.js';
+import * as gitStash from './git-stash.js';
+import { prCreate } from './gh.js';
+import { createLocks } from './locks.js';
 import { worktreePaths, worktreeName } from './worktree.js';
 import { resolveWithinRoot, sanitizeFilename, uniqueName, maxUploadBytes } from './files.js';
 import { openInEditor } from './editor.js';
@@ -86,12 +90,33 @@ function responderDemasiadoGrande(req, res, { max, needsPassword }) {
 export function createApp({ config, store, settingsStore = createSettings(), projectsStore, sessionStore = createSessionStore({ persistPath: config.SESSIONS_PATH, ttlMs: config.SESSION_TTL_MS }), tmux = { listSessions, newTmuxSession, killTmuxSession }, git: gitOverrides = {}, editor = { openInEditor } }) {
   const git = { worktreeAdd, worktreeRemove, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, ...gitOverrides };
   const projects = projectsStore || createProjects({ seed: config.PROJECTS });
+  const locks = createLocks();
   // Autoriza endpoints sensibles (hooks, spawn, gestión, upload). Antes exigía loopback
   // (LOCAL); detrás de Tailscale Serve toda conexión llega como loopback, así que ese gate
   // dejó de aislar. La barrera real es la auth: cookie de sesión o token (Bearer/?token=).
   function authorize(req, res) {
     if (!isAuthenticated(req, { sessionStore, token: config.TOKEN })) { res.writeHead(401).end(); return false; }
     return true;
+  }
+
+  // Resuelve el repo scopeado por ?path=. Escribe la respuesta de error y devuelve
+  // null si no se puede. 400 = el path escapa del worktree (input inválido);
+  // 409 = no hay sesión/cwd, o ahí no hay repo git usable (estado, no input).
+  // El 409 lleva cuerpo { reason } para que el cliente pueda decir POR QUÉ: antes
+  // mostraba "sin repo git acá" incluso cuando SÍ había repo y el motivo real era
+  // que su raíz cae fuera del alcance de la sesión (ver resolveRepo en git.js).
+  function conflict(res, reason) {
+    res.writeHead(409, { 'content-type': 'application/json' }).end(JSON.stringify({ reason }));
+    return null;
+  }
+  async function resolveRepoOr(res, s, url) {
+    if (!s || !s.cwd) return conflict(res, 'sin-sesion');
+    const rel = (url.searchParams.get('path') || '').replace(/^\/+/, '');
+    if (resolveWithinRoot(s.cwd, rel) === null) { res.writeHead(400).end(); return null; }
+    const repo = await resolveRepo(s.cwd, rel);
+    if (!repo) return conflict(res, 'sin-repo');
+    if (repo.error) return conflict(res, repo.error);
+    return repo;
   }
 
   let hub;
@@ -307,7 +332,12 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
         const abs = join(realTarget, d.name);
         let size = 0;
         if (!d.isDirectory()) { try { size = (await stat(abs)).size; } catch { size = 0; } }
-        entries.push({ name: d.name, rel: relative(realRoot, abs), isDir: d.isDirectory(), size });
+        // isRepo: subcarpeta que es repo git. El propio '.git' no cuenta.
+        let isRepo = false;
+        if (d.isDirectory() && d.name !== '.git') {
+          try { await stat(join(abs, '.git')); isRepo = true; } catch { /* no es repo */ }
+        }
+        entries.push({ name: d.name, rel: relative(realRoot, abs), isDir: d.isDirectory(), size, isRepo });
       }
       entries.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
       const relFromRoot = relative(realRoot, realTarget);
@@ -343,13 +373,53 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
     if (req.method === 'GET' && url.pathname === '/git/status') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       try {
         const [working, overview, log] = await Promise.all([
-          workingStatus(s.cwd), branchOverview(s.cwd), gitCommits(s.cwd),
+          workingStatus(repo.dir), branchOverview(repo.dir), gitCommits(repo.dir),
         ]);
         res.writeHead(200, { 'content-type': 'application/json' })
-          .end(JSON.stringify({ working, overview, commits: log, canWrite: !!config.ALLOW_GIT_WRITE }));
+          .end(JSON.stringify({ working, overview, commits: log, repo: { rel: repo.rel, name: repo.name } }));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/git/branches') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await gitBranches.listBranches(repo.dir);
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/git/stash') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await gitStash.stashList(repo.dir);
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/git/log') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await fullLog(repo.dir, {
+          limit: url.searchParams.get('limit'),
+          skip: url.searchParams.get('skip'),
+        });
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
       } catch { res.writeHead(500).end(); }
       return;
     }
@@ -357,12 +427,13 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
     if (req.method === 'GET' && url.pathname === '/git/diff') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       const file = url.searchParams.get('file') || '';
       const base = url.searchParams.get('base') || 'working';
-      if (!file || resolveWithinRoot(s.cwd, file) === null) { res.writeHead(400).end(); return; }
+      if (!file || resolveWithinRoot(repo.dir, file) === null) { res.writeHead(400).end(); return; }
       try {
-        const out = await filePatch(s.cwd, file, base);
+        const out = await filePatch(repo.dir, file, base);
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
       } catch { res.writeHead(500).end(); }
       return;
@@ -370,29 +441,60 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
 
     if (req.method === 'POST' && url.pathname === '/git/action') {
       if (!authorize(req, res)) return;
-      if (!config.ALLOW_GIT_WRITE) { res.writeHead(403).end(); return; }
       const s = store.get(url.searchParams.get('id') || '');
-      if (!s || !s.cwd) { res.writeHead(409).end(); return; }
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
       let body;
       try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
-      const { action, paths, message } = body || {};
+      const { action, paths, message, branch, from, index } = body || {};
       if (paths !== undefined) {
         if (!Array.isArray(paths)) { res.writeHead(400).end(); return; }
         for (const p of paths) {
-          if (typeof p !== 'string' || resolveWithinRoot(s.cwd, p) === null) { res.writeHead(400).end(); return; }
+          if (typeof p !== 'string' || resolveWithinRoot(repo.dir, p) === null) { res.writeHead(400).end(); return; }
         }
       }
+      if (branch !== undefined && typeof branch !== 'string') { res.writeHead(400).end(); return; }
       let r;
-      switch (action) {
-        case 'stage': r = await gitWrite.stage(s.cwd, paths); break;
-        case 'unstage': r = await gitWrite.unstage(s.cwd, paths); break;
-        case 'discard': r = await gitWrite.discard(s.cwd, paths); break;
-        case 'commit': r = await gitWrite.commit(s.cwd, message); break;
-        case 'push': r = await gitWrite.push(s.cwd, s.branch); break;
-        case 'pull': r = await gitWrite.pull(s.cwd); break;
-        case 'merge-default': r = await gitWrite.mergeDefault(s.cwd); break;
-        case 'abort': r = await gitWrite.abort(s.cwd); break;
-        default: res.writeHead(400).end(); return;
+      try {
+        r = await locks.run(repo.dir, async () => {
+          switch (action) {
+            case 'stage': return gitWrite.stage(repo.dir, paths);
+            case 'unstage': return gitWrite.unstage(repo.dir, paths);
+            case 'discard': return gitWrite.discard(repo.dir, paths);
+            case 'commit': return gitWrite.commit(repo.dir, message);
+            case 'push': return gitWrite.push(repo.dir);
+            case 'pull': return gitWrite.pull(repo.dir);
+            case 'merge-default': return gitWrite.mergeDefault(repo.dir);
+            case 'abort': return gitWrite.abort(repo.dir);
+            case 'checkout': return gitBranches.checkout(repo.dir, branch);
+            case 'branch-create': return gitBranches.createBranch(repo.dir, branch, from);
+            case 'stash-push': return gitStash.stashPush(repo.dir, message);
+            case 'stash-apply': return gitStash.stashApply(repo.dir, index);
+            case 'stash-drop': return gitStash.stashDrop(repo.dir, index);
+            case 'fetch': return gitWrite.fetchRemote(repo.dir);
+            case 'amend': return gitWrite.amend(repo.dir, message);
+            case 'pr-create': return prCreate(repo.dir);
+            default: return null; // acción desconocida
+          }
+        });
+      } catch (e) {
+        res.writeHead(e && e.message === 'busy' ? 409 : 500).end();
+        return;
+      }
+      if (r === null) { res.writeHead(400).end(); return; }
+      // Tras un checkout el branch de la sesión quedó stale: refrescarlo ya, sin
+      // esperar al próximo hook. hooks-logic lo reconfirma después. persist() para
+      // que sobreviva un reinicio, y broadcast para que la card (SessionPod, que
+      // pinta session.branch del snapshot de WS) lo muestre ya, no en el próximo hook.
+      // Se muta la MISMA referencia en vez de upsertear una copia ({ ...s, branch }):
+      // la copia reemplaza el objeto sesión entero por un snapshot potencialmente
+      // viejo y pierde cualquier campo que otro handler (hooks) haya escrito
+      // mientras la acción git estaba en vuelo.
+      if (r.ok && r.branch && s.cwd === repo.dir) {
+        s.branch = r.branch;
+        store.upsert(s);
+        store.persist();
+        hub.broadcast({ type: 'session', session: snapOf(s) });
       }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r));
       return;

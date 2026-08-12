@@ -1,9 +1,4 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { remoteDefaultBranch, currentBranch, validBranch } from './git.js';
-
-const run = promisify(execFile);
-const defaultExec = async (file, args) => (await run(file, args)).stdout;
+import { remoteDefaultBranch, currentBranch, validBranch, defaultExec } from './git.js';
 
 // Parsea `git status --porcelain=v1 -z`. Entradas separadas por NUL; cada una es
 // "XY path"; en rename/copy la ruta de origen viene en el token siguiente.
@@ -116,6 +111,35 @@ export async function filePatch(cwd, rel, base, exec = defaultExec) {
   }
   const binary = /Binary files /.test(patch);
   return { binary, patch: binary ? '' : patch };
+}
+
+export function parseFullLog(out) {
+  const rows = [];
+  for (const line of String(out).split('\n')) {
+    if (!line.trim()) continue;
+    const [sha, shortSha, subject, author, date] = line.split('\x1f');
+    if (!sha) continue;
+    rows.push({ sha, shortSha, subject, author, date });
+  }
+  return rows;
+}
+
+// Historial completo del repo, paginado. A diferencia de commits(), NO trae los
+// archivos de cada commit: eso es un `git show` por commit y con cientos de
+// commits se vuelve inusable. El cliente los pide al expandir.
+export async function fullLog(cwd, { limit = 50, skip = 0 } = {}, exec = defaultExec) {
+  // limit/skip llegan crudos del query string. Sin truncar, un valor fraccionario se
+  // serializa tal cual ('-n 2.5'), git lo rechaza y el catch devuelve [] —
+  // indistinguible de "no hay commits"; e Infinity git lo parsea como 0 y resetea
+  // la página en silencio. Math.trunc + Number.isFinite deja siempre un entero.
+  const toInt = (v, dflt) => { const x = Number(v); return Number.isFinite(x) ? Math.trunc(x) : dflt; };
+  const n = Math.min(Math.max(toInt(limit, 50) || 50, 1), 200);
+  const s = Math.max(toInt(skip, 0), 0);
+  try {
+    return parseFullLog(await exec('git', [
+      '-C', cwd, 'log', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%as', '-n', String(n), `--skip=${s}`,
+    ]));
+  } catch { return []; }
 }
 
 export { defaultExec, remoteDefaultBranch, currentBranch, validBranch };

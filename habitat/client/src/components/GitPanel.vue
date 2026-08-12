@@ -1,0 +1,170 @@
+<script setup lang="ts">
+import { ref, watch, onBeforeUnmount, computed } from 'vue'
+import { useGit, type DiffBase, type StashEntry } from '../composables/useGit'
+import { canCreatePr } from '../composables/gitBranches'
+import { parseDiff, type DiffHunk } from '../composables/parseDiff'
+import { useSessions } from '../stores/sessions'
+import GitWork from './GitWork.vue'
+import GitBranchDiff from './GitBranchDiff.vue'
+import GitBranches from './GitBranches.vue'
+import GitCommits from './GitCommits.vue'
+import GitDiff from './GitDiff.vue'
+import '../styles/git.css'
+
+const props = defineProps<{ id: string; path: string }>()
+
+const store = useSessions()
+const { status, loading, error, loadStatus, loadDiff, loadStash, action } = useGit()
+
+const tab = ref<'work' | 'branches' | 'commits' | 'branch'>('work')
+const branchesEl = ref<InstanceType<typeof GitBranches> | null>(null)
+const diff = ref<{ file: string; hunks: DiffHunk[]; binary: boolean } | null>(null)
+const busy = ref('')
+const actionErr = ref('')
+const stash = ref<StashEntry[]>([])
+// Cuando el checkout falla por árbol sucio, ofrecemos la salida útil en vez de
+// dejar al usuario con un error de git.
+const retry = ref<{ branch: string } | null>(null)
+const prUrl = ref('')
+
+async function refresh() {
+  await loadStatus(props.id, props.path)
+  stash.value = await loadStash(props.id, props.path)
+}
+
+async function openDiff(file: string, base: DiffBase) {
+  diff.value = null
+  try {
+    const r = await loadDiff(props.id, file, base, props.path)
+    diff.value = { file, hunks: r.binary ? [] : parseDiff(r.patch), binary: r.binary }
+  } catch { actionErr.value = 'no se pudo cargar el diff' }
+}
+
+async function run(name: string, payload: Record<string, unknown> = {}, confirmMsg?: string) {
+  if (confirmMsg && !confirm(confirmMsg)) return
+  busy.value = name; actionErr.value = ''
+  const r = await action(props.id, name, { path: props.path, ...payload })
+  busy.value = ''
+  if (!r.ok) {
+    actionErr.value = r.conflict ? `Conflicto en: ${(r.files ?? []).join(', ')}` : (r.message || 'falló')
+    retry.value = r.dirty && name === 'checkout' ? { branch: payload.branch as string } : null
+  } else {
+    retry.value = null
+  }
+  await refresh()
+  await branchesEl.value?.refresh()
+}
+
+// El stash va por run(), no por action() directo: así toma `busy` (el botón no admite
+// doble click) y limpia el actionErr del checkout que falló — con action() directo ese
+// error quedaba visible como si el stash hubiera fallado.
+async function stashAndRetry() {
+  const branch = retry.value?.branch
+  if (!branch) return
+  retry.value = null
+  await run('stash-push', { message: `auto antes de ir a ${branch}` })
+  if (actionErr.value) return // el stash falló: no encadenar el checkout encima
+  await run('checkout', { branch })
+}
+
+async function doPr() {
+  busy.value = 'pr-create'; actionErr.value = ''; prUrl.value = ''
+  const r = await action(props.id, 'pr-create', { path: props.path })
+  busy.value = ''
+  if (r.url) prUrl.value = r.url
+  if (!r.ok) actionErr.value = r.message || 'no se pudo crear el PR'
+  await refresh()
+}
+
+// Refresh live: cada broadcast WS hace store.upsert -> la sesión seleccionada
+// cambia de identidad; debounced para no spamear git.
+let t: ReturnType<typeof setTimeout> | null = null
+function schedule() { if (t) clearTimeout(t); t = setTimeout(refresh, 800) }
+watch(() => store.list.find((s) => s.id === props.id), schedule)
+// El path lo manda el shell: al navegar a otra carpeta hay que re-scopear.
+// Cambiar de sesión o de path invalida cualquier oferta de recuperación pendiente:
+// "retry" (y el error que la originó) apuntan a la rama/repo que falló, que ya no
+// es el contexto activo — si no se limpia, "Stashear y reintentar" terminaría
+// operando sobre el repo/rama nuevos con el nombre de rama del contexto viejo.
+// prUrl tiene la misma fuga: es el link del PR del repo/rama anterior, y si no
+// se limpia queda visible apuntando a un PR que no tiene nada que ver con el
+// repo activo nuevo.
+watch(() => [props.id, props.path] as const, () => {
+  retry.value = null
+  actionErr.value = ''
+  prUrl.value = ''
+  refresh()
+}, { immediate: true })
+onBeforeUnmount(() => { if (t) clearTimeout(t) })
+
+const repoLabel = computed(() => {
+  if (!status.value) return null
+  const { branch, ahead, behind } = status.value.overview
+  return { name: status.value.repo.name || status.value.repo.rel || '·', branch, ahead, behind }
+})
+const pr = computed(() => (status.value ? canCreatePr(status.value.overview) : { can: false, why: '' }))
+// Traduce el discriminante del 409 (ver reason409 en useGit) a algo que se entienda.
+// 'repo-arriba' era el caso mentiroso: el panel decía "sin repo git acá" cuando SÍ
+// había repo y el motivo real era que su raíz está fuera del alcance de la sesión.
+const errMsg = computed(() => {
+  switch (error.value) {
+    case 'sin-repo': return 'sin repo git acá'
+    case 'sin-sesion': return 'este pod no tiene un directorio asociado'
+    case 'repo-arriba': return 'el repo está por encima del directorio de la sesión: fuera de alcance'
+    case 'repo-afuera': return 'el repo apunta fuera del directorio de la sesión: fuera de alcance'
+    default: return error.value
+  }
+})
+defineExpose({ repoLabel, refresh })
+</script>
+
+<template>
+  <div class="gp">
+    <nav class="gp-tabs">
+      <button :class="{ on: tab === 'work' }" @click="tab = 'work'">Trabajo</button>
+      <button :class="{ on: tab === 'branch' }" @click="tab = 'branch'">Rama</button>
+      <button :class="{ on: tab === 'branches' }" @click="tab = 'branches'">Branches</button>
+      <button :class="{ on: tab === 'commits' }" @click="tab = 'commits'">Commits</button>
+    </nav>
+
+    <p v-if="error" class="g-err">{{ errMsg }}</p>
+    <p v-if="actionErr" class="g-err">{{ actionErr }}</p>
+    <p v-if="prUrl" class="gp-pr"><a :href="prUrl" target="_blank" rel="noopener">{{ prUrl }}</a></p>
+    <p v-if="retry" class="g-err">
+      <button class="g-mini" :disabled="!!busy" @click="stashAndRetry">Stashear y reintentar</button>
+    </p>
+    <p v-if="loading" class="g-muted">cargando…</p>
+
+    <div v-if="status" class="gp-body">
+      <GitWork v-if="tab === 'work'" :status="status" :stash="stash" @run="run" @diff="openDiff" />
+      <GitBranchDiff v-else-if="tab === 'branch'" :status="status" @diff="openDiff" />
+      <GitBranches v-else-if="tab === 'branches'" ref="branchesEl" :id="props.id" :path="props.path" @run="run" />
+      <GitCommits v-else :status="status" :id="props.id" :path="props.path" @diff="openDiff" />
+    </div>
+
+    <!-- Barra fija: visible desde cualquier sub-pestaña. Es la corrección al
+         problema original (los botones estaban enterrados en una pestaña). -->
+    <footer v-if="status" class="gp-actions">
+      <button class="g-act" :disabled="busy === 'merge-default'"
+        @click="run('merge-default', {}, `Traer ${status.overview.default} a la rama?`)">↻ Actualizar</button>
+      <button class="g-act" :disabled="busy === 'fetch'" @click="run('fetch')">Fetch</button>
+      <button class="g-act" :disabled="busy === 'pull'" @click="run('pull')">Pull</button>
+      <button class="g-act" :disabled="busy === 'push'" @click="run('push')">Push</button>
+      <button class="g-act" :disabled="busy === 'pr-create' || !pr.can" :title="pr.why"
+        @click="doPr">PR</button>
+    </footer>
+
+    <GitDiff v-if="diff" :file="diff.file" :hunks="diff.hunks" :binary="diff.binary" @close="diff = null" />
+  </div>
+</template>
+
+<style scoped>
+.gp { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.gp-tabs { display: flex; gap: .25rem; padding: .4rem .75rem; }
+.gp-tabs button { flex: 1; padding: .35rem; min-height: 40px; background: transparent; color: inherit; border: 1px solid var(--color-line, #3a2e22); border-radius: var(--radius-sm, 4px); cursor: pointer; }
+.gp-tabs button.on { background: var(--color-brass, #c79a4b); color: #1a1410; font-weight: 700; }
+.gp-body { flex: 1; overflow: auto; padding: .5rem .75rem; }
+.gp-actions { display: flex; flex-wrap: wrap; gap: .4rem; padding: .5rem .75rem; border-top: 1px solid var(--color-line, #3a2e22); }
+.gp-pr { padding: 0 .75rem; font-size: .8rem; word-break: break-all; }
+.gp-pr a { color: var(--color-brass, #c79a4b); }
+</style>

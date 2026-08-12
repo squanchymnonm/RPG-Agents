@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStore, newSession } from './state.js';
@@ -17,6 +18,20 @@ const config = { PORT: 0, BIND: '127.0.0.1', TOKEN: 'secret', PREVIEW_LINES: 5, 
 
 function listen(server) {
   return new Promise((res) => server.listen(0, '127.0.0.1', () => res(server.address().port)));
+}
+
+// Repo git temporal con un commit inicial. Identidad explícita para no depender
+// de la config global de git en la máquina que corre los tests.
+function tmpRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'habitat-git-'));
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' });
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'test@local');
+  git('config', 'user.name', 'test');
+  writeFileSync(join(dir, 'a.js'), 'const a = 1\n');
+  git('add', '-A');
+  git('commit', '-m', 'inicial');
+  return { dir, git };
 }
 
 test('POST /hooks sin token -> 401', async () => {
@@ -1082,8 +1097,9 @@ test('GET /git/status sin sesion -> 409', async () => {
 });
 
 test('GET /git/diff rechaza path fuera del root -> 400', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert(newSession('s1', { cwd: '/home/u/proj', name: 'proj', status: 'working' }));
+  store.upsert(newSession('s1', { cwd: dir, name: 'proj', status: 'working' }));
   const { server } = createApp({ config, store });
   const port = await listen(server);
   const res = await fetch(`http://127.0.0.1:${port}/git/diff?id=s1&file=../../etc/passwd`, {
@@ -1091,26 +1107,34 @@ test('GET /git/diff rechaza path fuera del root -> 400', async () => {
   });
   assert.equal(res.status, 400);
   server.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
-test('POST /git/action con gate off -> 403', async () => {
+test('POST /git/action ya no está detrás de un gate (stage funciona)', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert({ id: 's1', cwd: '/home/u/proj', name: 'proj', status: 'working' });
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
   const { server } = createApp({ config, store }); // config sin ALLOW_GIT_WRITE
   const port = await listen(server);
+  writeFileSync(join(dir, 'b.js'), 'const b = 2\n');
   const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
-    body: JSON.stringify({ action: 'stage', paths: ['a.js'] }),
+    body: JSON.stringify({ action: 'stage', paths: ['b.js'] }),
   });
-  assert.equal(res.status, 403);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
   server.close();
+  rmSync(dir, { recursive: true, force: true });
 });
 
-test('POST /git/action con gate on rechaza path fuera de root -> 400', async () => {
+// Cobertura que reemplaza a la vieja 'con gate on rechaza path fuera de root': el gate
+// desapareció, pero el guard sobre `paths` (ahora contra repo.dir) sigue vigente.
+test('POST /git/action rechaza paths fuera del repo -> 400', async () => {
+  const { dir } = tmpRepo();
   const store = createStore();
-  store.upsert({ id: 's1', cwd: '/home/u/proj', name: 'proj', status: 'working' });
-  const { server } = createApp({ config: { ...config, ALLOW_GIT_WRITE: true }, store });
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
   const port = await listen(server);
   const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
     method: 'POST',
@@ -1118,6 +1142,318 @@ test('POST /git/action con gate on rechaza path fuera de root -> 400', async () 
     body: JSON.stringify({ action: 'stage', paths: ['../../etc/passwd'] }),
   });
   assert.equal(res.status, 400);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/branches lista locales y remotas', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/branches?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.current, 'main');
+  assert.ok(body.local.some((b) => b.name === 'main' && b.current === true));
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// Nombre ajustado: con un solo commit en el repo, "acota el limit" no se
+// ejerce (pasaría igual sin clamp alguno). Esta cubre el shape de la respuesta;
+// el clamp real lo cubre el test siguiente.
+test('GET /git/log devuelve el historial con sha/subject/autor/fecha', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/log?id=s1&limit=9999`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.length, 1);
+  assert.equal(body[0].subject, 'inicial');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// El test anterior no prueba el acotado a 200: con 1 solo commit, pedir
+// limit=9999 y recibir 1 pasaría igual si el endpoint pasara el 9999 crudo a
+// git. Este arma un historial de 206 commits con commit-tree/update-ref
+// (plumbing: reusa el mismo árbol del commit inicial y no toca el working
+// tree, así no hay que pagar 205 commits reales vía `git commit`) y verifica
+// que el clamp real de fullLog corta en 200.
+test('GET /git/log acota a 200 aunque el historial real tenga más', async () => {
+  const { dir, git } = tmpRepo();
+  const tree = git('write-tree').toString().trim();
+  let parent = git('rev-parse', 'HEAD').toString().trim();
+  for (let i = 0; i < 205; i++) {
+    parent = git('commit-tree', tree, '-p', parent, '-m', `c${i}`).toString().trim();
+  }
+  git('update-ref', 'refs/heads/main', parent);
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/log?id=s1&limit=9999`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.length, 200); // 206 commits reales, clampeado a 200
+  assert.equal(body[0].subject, 'c204'); // el más nuevo (tip) primero
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action checkout crea y cambia de rama', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const post = (body) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify(body),
+  });
+  const c = await (await post({ action: 'branch-create', branch: 'feature/x', from: 'HEAD' })).json();
+  assert.equal(c.ok, true);
+  const b = await (await post({ action: 'checkout', branch: 'main' })).json();
+  assert.equal(b.ok, true);
+  assert.equal(b.branch, 'main');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action checkout persiste el branch de la sesión y lo difunde por WS', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server, hub } = createApp({ config, store });
+  const port = await listen(server);
+  // Spy sobre broadcast: sin esto, borrar el store.persist()+hub.broadcast() de
+  // index.js no rompería ningún test (el store.upsert solo ya alcanza para que
+  // la respuesta HTTP tenga branch:'main').
+  const broadcasts = [];
+  const origBroadcast = hub.broadcast.bind(hub);
+  hub.broadcast = (msg) => { broadcasts.push(msg); origBroadcast(msg); };
+  const before = store.get('s1');
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'checkout', branch: 'main' }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  // el store en memoria refleja el branch nuevo, no sólo la respuesta HTTP
+  assert.equal(store.get('s1').branch, 'main');
+  // …y sobre la MISMA referencia: upsertear una copia ({ ...s, branch }) reemplaza el
+  // objeto sesión entero por un snapshot potencialmente viejo y descarta lo que otro
+  // handler haya escrito mientras la acción git estaba en vuelo (lost update).
+  assert.equal(store.get('s1'), before, 'debe mutar la sesión, no reemplazarla por una copia');
+  // se difundió por WS: la card (SessionPod) pinta session.branch del snapshot,
+  // no espera al próximo hook
+  assert.ok(broadcasts.some((m) => m.type === 'session' && m.session.branch === 'main'));
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action bloquea una segunda escritura concurrente sobre el mismo repo -> 409', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  writeFileSync(join(dir, 'b.js'), 'const b = 2\n');
+  writeFileSync(join(dir, 'c.js'), 'const c = 3\n');
+  const post = (paths) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'stage', paths }),
+  });
+  // Disparadas sin esperar entre sí: ambas quedan en vuelo a la vez, así que la
+  // segunda en tomar el lock del repo tiene que chocar con la primera.
+  const [r1, r2] = await Promise.all([post(['b.js']), post(['c.js'])]);
+  assert.deepEqual([r1.status, r2.status].sort(), [200, 409]);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action con acción desconocida -> 400', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'rm-rf' }),
+  });
+  assert.equal(res.status, 400);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// El repo temporal no tiene remoto, así que prCreate corta en su propio guard
+// (base === head, porque remoteDefaultBranch cae a la rama actual) y NUNCA llega a
+// invocar el binario `gh`. Lo que este test cubre es que ese camino responde 200 con
+// ok:false + mensaje, en vez de reventar en 500.
+test('POST /git/action pr-create sin remoto -> 200 con ok:false y mensaje (no 500)', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'pr-create' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  // El repo temporal no tiene remoto: falla, pero con mensaje, no con 500.
+  assert.equal(body.ok, false);
+  assert.ok(typeof body.message === 'string' && body.message.length > 0);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('stash: push, list y pop por endpoint', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const post = (body) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify(body),
+  });
+  writeFileSync(join(dir, 'a.js'), 'const a = 99\n'); // sucia el árbol
+  assert.equal((await (await post({ action: 'stash-push', message: 'wip' })).json()).ok, true);
+  const list = await (await fetch(`http://127.0.0.1:${port}/git/stash?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  })).json();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].index, 0);
+  assert.ok(list[0].message.includes('wip'));
+  assert.equal((await (await post({ action: 'stash-apply', index: 0 })).json()).ok, true);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('stash-apply con índice no numérico -> ok:false', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'stash-apply', index: 'x' }),
+  });
+  assert.equal((await res.json()).ok, false);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status con path scopea al sub-repo y devuelve repo', async () => {
+  const { dir, git } = tmpRepo();
+  // sub-repo anidado en back/
+  const back = join(dir, 'back');
+  mkdirSync(back);
+  const sub = (...args) => execFileSync('git', ['-C', back, ...args], { stdio: 'pipe' });
+  sub('init', '-b', 'main');
+  sub('config', 'user.email', 'test@local');
+  sub('config', 'user.name', 'test');
+  writeFileSync(join(back, 'x.js'), 'x\n');
+  sub('add', '-A');
+  sub('commit', '-m', 'inicial back');
+  git('add', '-A'); // el padre ignora back/ o lo trackea, da igual acá
+
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1&path=back`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.repo.name, 'back');
+  assert.equal(body.repo.rel, 'back');
+  assert.equal(body.canWrite, undefined); // el gate se fue del payload
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status con path que escapa -> 400', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1&path=../fuera`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 400);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status en un cwd sin repo git -> 409', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'habitat-norepo-'));
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409); // el cliente lo muestra como "sin repo git acá"
+  assert.equal((await res.json()).reason, 'sin-repo');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- I5: el repo está ARRIBA del cwd de la sesión ---
+// Una sesión arrancada en un subdirectorio del repo sigue sin acceso (s.cwd es el
+// límite del sandbox y el guard no se relaja), pero el 409 tiene que decir el motivo
+// real: antes la UI mostraba "sin repo git acá" cuando SÍ había repo.
+test('GET /git/status con el repo por encima del cwd de la sesión -> 409 reason repo-arriba', async () => {
+  const { dir } = tmpRepo();
+  const sub = join(dir, 'sub');
+  mkdirSync(sub);
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: sub, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'repo-arriba');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /git/status sin sesión -> 409 reason sin-sesion', async () => {
+  const { server } = createApp({ config, store: createStore() });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/status?id=nope`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'sin-sesion');
   server.close();
 });
 
@@ -1269,6 +1605,27 @@ test('GET /file devuelve texto, binario y tooLarge', async () => {
   const bad = await fetch(`http://127.0.0.1:${port}/file?id=s1&path=../x`, { headers: h });
   assert.equal(bad.status, 400);
 
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('GET /tree marca isRepo en carpetas que son repos, no en .git', async () => {
+  const { dir } = tmpRepo();
+  mkdirSync(join(dir, 'back'));
+  mkdirSync(join(dir, 'back', '.git'));
+  mkdirSync(join(dir, 'docs'));
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/tree?id=s1`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  const body = await res.json();
+  const byName = Object.fromEntries(body.entries.map((e) => [e.name, e]));
+  assert.equal(byName.back.isRepo, true);
+  assert.equal(byName.docs.isRepo, false);
+  assert.equal(byName['.git'].isRepo, false); // el .git del repo raíz no se marca
   server.close();
   rmSync(dir, { recursive: true, force: true });
 });

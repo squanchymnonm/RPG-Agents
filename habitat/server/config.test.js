@@ -44,16 +44,6 @@ test('config expone USER/PASSWORD_HASH/SESSIONS_PATH/SESSION_TTL_MS/COOKIE_SECUR
   assert.ok(cfg.SESSIONS_PATH.endsWith('.sessions.json'));
 });
 
-test('ALLOW_GIT_WRITE: off por default, on con HABITAT_ALLOW_GIT_WRITE=1', async () => {
-  delete process.env.HABITAT_ALLOW_GIT_WRITE;
-  const a = (await import(`./config.js?case=off${Math.random()}`)).default;
-  assert.equal(a.ALLOW_GIT_WRITE, false);
-  process.env.HABITAT_ALLOW_GIT_WRITE = '1';
-  const b = (await import(`./config.js?case=on${Math.random()}`)).default;
-  assert.equal(b.ALLOW_GIT_WRITE, true);
-  delete process.env.HABITAT_ALLOW_GIT_WRITE;
-});
-
 test('EDITOR: nvim por default, configurable con HABITAT_EDITOR', async () => {
   delete process.env.HABITAT_EDITOR;
   const a = (await import(`./config.js?editor=off${Math.random()}`)).default;
