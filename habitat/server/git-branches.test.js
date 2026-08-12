@@ -58,7 +58,7 @@ test('checkout rechaza branch tomada por otro worktree sin invocar checkout', as
   const r = await checkout('/proj', 'dante', exec);
   assert.equal(r.ok, false);
   assert.ok(r.message.includes('dante')); // nombra la sesión que la tiene
-  assert.equal(calls.some((c) => c.startsWith('-C /proj checkout')), false);
+  assert.equal(calls.some((c) => c.startsWith('-C /proj switch')), false);
 });
 
 test('checkout marca dirty cuando git rechaza por cambios locales', async () => {
@@ -68,9 +68,11 @@ test('checkout marca dirty cuando git rechaza por cambios locales', async () => 
     if (a.includes('--abbrev-ref HEAD')) return 'link\n';
     if (a.includes('branch -r')) return '';
     if (a.includes('branch --list')) return 'main\t\t \n';
-    if (a.startsWith('-C /proj checkout')) {
+    if (a.startsWith('-C /proj switch')) {
       const e = new Error('x');
-      e.stderr = 'error: Your local changes to the following files would be overwritten by checkout:\n\ta.js';
+      // stderr real de `git switch` sobre árbol sucio (verificado empíricamente):
+      // conserva la palabra "checkout" pero menciona "switch branches".
+      e.stderr = 'error: Your local changes to the following files would be overwritten by checkout:\n\ta.js\nPlease commit your changes or stash them before you switch branches.\nAborting';
       throw e;
     }
     return '';
@@ -80,7 +82,7 @@ test('checkout marca dirty cuando git rechaza por cambios locales', async () => 
   assert.equal(r.dirty, true);
 });
 
-test('checkout ok invoca git checkout', async () => {
+test('checkout ok invoca git switch', async () => {
   let got;
   const exec = async (file, args) => {
     const a = args.join(' ');
@@ -88,13 +90,13 @@ test('checkout ok invoca git checkout', async () => {
     if (a.includes('--abbrev-ref HEAD')) return 'link\n';
     if (a.includes('branch -r')) return '';
     if (a.includes('branch --list')) return 'main\t\t \n';
-    if (a.startsWith('-C /proj checkout')) { got = a; return ''; }
+    if (a.startsWith('-C /proj switch')) { got = a; return ''; }
     return '';
   };
   const r = await checkout('/proj', 'main', exec);
   assert.equal(r.ok, true);
   assert.equal(r.branch, 'main');
-  assert.equal(got, '-C /proj checkout main');
+  assert.equal(got, '-C /proj switch main');
 });
 
 test('createBranch desde default y desde HEAD', async () => {

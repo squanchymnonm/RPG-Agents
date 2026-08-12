@@ -55,7 +55,10 @@ export async function checkout(cwd, branch, exec = defaultExec) {
   const taken = local.find((b) => b.name === branch && b.worktree && !b.current);
   if (taken) return { ok: false, message: `${branch} ya está abierta en ${basename(taken.worktree)}` };
   try {
-    await exec('git', ['-C', cwd, 'checkout', branch]);
+    // switch, no checkout: checkout acepta un pathspec y, si `branch` coincide con
+    // un archivo del working tree (validBranch permite '.' y '/'), descarta sus
+    // cambios sin commitear en vez de fallar. switch sólo entiende refs de rama.
+    await exec('git', ['-C', cwd, 'switch', branch]);
     return { ok: true, branch };
   } catch (e) {
     if (isDirtyReject(e)) return { ok: false, dirty: true, message: trimErr(e) };
