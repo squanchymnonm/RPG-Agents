@@ -68,7 +68,15 @@ let t: ReturnType<typeof setTimeout> | null = null
 function schedule() { if (t) clearTimeout(t); t = setTimeout(refresh, 800) }
 watch(() => store.list.find((s) => s.id === props.id), schedule)
 // El path lo manda el shell: al navegar a otra carpeta hay que re-scopear.
-watch(() => [props.id, props.path] as const, refresh, { immediate: true })
+// Cambiar de sesión o de path invalida cualquier oferta de recuperación pendiente:
+// "retry" (y el error que la originó) apuntan a la rama/repo que falló, que ya no
+// es el contexto activo — si no se limpia, "Stashear y reintentar" terminaría
+// operando sobre el repo/rama nuevos con el nombre de rama del contexto viejo.
+watch(() => [props.id, props.path] as const, () => {
+  retry.value = null
+  actionErr.value = ''
+  refresh()
+}, { immediate: true })
 onBeforeUnmount(() => { if (t) clearTimeout(t) })
 
 const repoLabel = computed(() => {
