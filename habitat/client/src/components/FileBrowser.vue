@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { useFiles, type FileEntry } from '../composables/useFiles'
+import { useFiles, limitMB, type FileEntry, type TooLarge } from '../composables/useFiles'
 import { fmt } from '../sprites'
 
 const props = defineProps<{ id: string }>()
@@ -39,14 +39,21 @@ async function onFile(e: Event) {
   }
 }
 
-// Sube; si el server pide password (413), la pide y reintenta una vez.
+// Sube; ante 413 pide la contraseña y reintenta una vez, pero sólo si el server
+// tiene una configurada: si no, pedirla sería mandar al usuario a un reintento
+// que va a fallar igual, así que le decimos el límite y listo.
 async function doUpload(file: File) {
   try {
     const { rel } = await upload(props.id, file)
     afterUpload(rel)
   } catch (err) {
-    if (err && (err as { tooLarge?: boolean }).tooLarge) {
-      const pw = window.prompt(`"${file.name}" supera el límite. Contraseña para subirlo igual:`)
+    const tl = err as TooLarge | undefined
+    if (tl?.tooLarge) {
+      if (!tl.needsPassword) {
+        uploadErr.value = `"${file.name}" supera el límite de ${limitMB(tl.max)}`
+        return
+      }
+      const pw = window.prompt(`"${file.name}" supera los ${limitMB(tl.max)}. Contraseña para subirlo igual:`)
       if (!pw) { uploadErr.value = 'subida cancelada'; return }
       const { rel } = await upload(props.id, file, pw)
       afterUpload(rel)

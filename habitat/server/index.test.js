@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStore, newSession } from './state.js';
@@ -1269,6 +1269,84 @@ test('GET /file devuelve texto, binario y tooLarge', async () => {
   const bad = await fetch(`http://127.0.0.1:${port}/file?id=s1&path=../x`, { headers: h });
   assert.equal(bad.status, 400);
 
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// --- POST /files/upload -------------------------------------------------
+
+function uploadFixture(overrides = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'upload-'));
+  const store = createStore();
+  store.upsert(newSession('s1', { name: 'p', cwd: dir }));
+  const { server } = createApp({ config: { ...config, ...overrides }, store });
+  return { dir, store, server };
+}
+
+test('POST /files/upload dentro del cap escribe el archivo en .habitat-uploads', async () => {
+  const { dir, server } = uploadFixture({ UPLOAD_MAX_BYTES: 1024 });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/files/upload?id=s1`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer secret', 'x-filename': encodeURIComponent('dump.sql') },
+    body: 'CREATE TABLE t (id int);',
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).rel, join('.habitat-uploads', 'dump.sql'));
+  assert.equal(readFileSync(join(dir, '.habitat-uploads', 'dump.sql'), 'utf8'), 'CREATE TABLE t (id int);');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /files/upload que excede el cap responde 413, sin cortar la conexión', async () => {
+  const { dir, server } = uploadFixture({ UPLOAD_MAX_BYTES: 1024 });
+  const port = await listen(server);
+  // 4MB contra un cap de 1KB: el server tiene que contestar sin destruir el socket,
+  // o el cliente (y el proxy de Tailscale delante) ve un ECONNRESET -> 502.
+  const res = await fetch(`http://127.0.0.1:${port}/files/upload?id=s1`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer secret', 'x-filename': 'dump.sql' },
+    body: Buffer.alloc(4 * 1024 * 1024, 0x41),
+  });
+  assert.equal(res.status, 413);
+  const body = await res.json();
+  assert.equal(body.max, 1024);
+  assert.equal(body.needsPassword, false); // sin UPLOAD_PASSWORD, reintentar no sirve
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /files/upload que excede el cap no deja archivos a medio escribir', async () => {
+  const { dir, server } = uploadFixture({ UPLOAD_MAX_BYTES: 1024 });
+  const port = await listen(server);
+  await fetch(`http://127.0.0.1:${port}/files/upload?id=s1`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer secret', 'x-filename': 'dump.sql' },
+    body: Buffer.alloc(4 * 1024 * 1024, 0x41),
+  }).catch(() => {});
+  assert.deepEqual(readdirSync(join(dir, '.habitat-uploads')), []);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /files/upload: con UPLOAD_PASSWORD el 413 avisa que hay bypass, y la password lo levanta', async () => {
+  const { dir, server } = uploadFixture({ UPLOAD_MAX_BYTES: 1024, UPLOAD_PASSWORD: 'sec' });
+  const port = await listen(server);
+  const big = Buffer.alloc(4 * 1024 * 1024, 0x41);
+
+  const sinPw = await fetch(`http://127.0.0.1:${port}/files/upload?id=s1`, {
+    method: 'POST', headers: { authorization: 'Bearer secret', 'x-filename': 'dump.sql' }, body: big,
+  });
+  assert.equal(sinPw.status, 413);
+  assert.equal((await sinPw.json()).needsPassword, true);
+
+  const conPw = await fetch(`http://127.0.0.1:${port}/files/upload?id=s1`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer secret', 'x-filename': 'dump.sql', 'x-upload-password': 'sec' },
+    body: big,
+  });
+  assert.equal(conPw.status, 200);
+  assert.equal(statSync(join(dir, '.habitat-uploads', 'dump.sql')).size, big.length);
   server.close();
   rmSync(dir, { recursive: true, force: true });
 });
