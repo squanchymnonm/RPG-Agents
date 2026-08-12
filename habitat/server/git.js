@@ -9,7 +9,9 @@ import { realpath as fsRealpath } from 'node:fs/promises';
 import { resolveWithinRoot } from './files.js';
 
 const run = promisify(execFile);
-const defaultExec = async (file, args) => (await run(file, args)).stdout;
+// `opts` (ej. { cwd }) es opcional: las funciones de git pasan `-C <dir>` y no
+// lo necesitan, pero gh.js corre `gh` directamente y necesita el cwd real.
+const defaultExec = async (file, args, opts) => (await run(file, args, opts)).stdout;
 
 export function validBranch(branch) {
   const b = String(branch || '');
