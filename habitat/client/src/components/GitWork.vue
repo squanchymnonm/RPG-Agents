@@ -16,6 +16,14 @@ function doCommit() {
   emit('run', 'commit', { message: commitMsg.value })
   commitMsg.value = ''
 }
+function doAmend() {
+  const last = props.status.commits[0]
+  const warn = last?.pushed
+    ? 'El último commit ya está pusheado: el amend reescribe historia y el próximo push va a ser rechazado (habría que forzarlo desde la terminal). Seguir?'
+    : undefined
+  emit('run', 'amend', { message: commitMsg.value }, warn)
+  commitMsg.value = ''
+}
 </script>
 
 <template>
@@ -80,6 +88,7 @@ function doCommit() {
   <div class="g-commit">
     <input v-model="commitMsg" placeholder="mensaje de commit" @keyup.enter="doCommit" />
     <button class="g-act" :disabled="!commitMsg.trim()" @click="doCommit">Commit</button>
+    <button class="g-act" @click="doAmend">amend</button>
   </div>
 </template>
 

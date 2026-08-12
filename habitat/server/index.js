@@ -13,7 +13,7 @@ import { attachWs } from './ws.js';
 import { attachTerm } from './term.js';
 import { capturePane, sendKeys, gitBranch, listSessions, newTmuxSession, killTmuxSession } from './tmux.js';
 import { worktreeAdd, worktreeRemove, validBranch, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, resolveRepo } from './git.js';
-import { workingStatus, branchOverview, commits as gitCommits, filePatch } from './git-read.js';
+import { workingStatus, branchOverview, commits as gitCommits, filePatch, fullLog } from './git-read.js';
 import * as gitWrite from './git-write.js';
 import * as gitBranches from './git-branches.js';
 import * as gitStash from './git-stash.js';
@@ -401,6 +401,21 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/git/log') {
+      if (!authorize(req, res)) return;
+      const s = store.get(url.searchParams.get('id') || '');
+      const repo = await resolveRepoOr(res, s, url);
+      if (!repo) return;
+      try {
+        const out = await fullLog(repo.dir, {
+          limit: url.searchParams.get('limit'),
+          skip: url.searchParams.get('skip'),
+        });
+        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(out));
+      } catch { res.writeHead(500).end(); }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/git/diff') {
       if (!authorize(req, res)) return;
       const s = store.get(url.searchParams.get('id') || '');
@@ -448,6 +463,8 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
             case 'stash-push': return gitStash.stashPush(repo.dir, message);
             case 'stash-apply': return gitStash.stashApply(repo.dir, index);
             case 'stash-drop': return gitStash.stashDrop(repo.dir, index);
+            case 'fetch': return gitWrite.fetchRemote(repo.dir);
+            case 'amend': return gitWrite.amend(repo.dir, message);
             default: return null; // acción desconocida
           }
         });

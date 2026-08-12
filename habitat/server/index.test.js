@@ -1163,6 +1163,23 @@ test('GET /git/branches lista locales y remotas', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('GET /git/log devuelve el historial y acota el limit', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/log?id=s1&limit=9999`, {
+    headers: { authorization: 'Bearer secret' },
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.length, 1);
+  assert.equal(body[0].subject, 'inicial');
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('POST /git/action checkout crea y cambia de rama', async () => {
   const { dir } = tmpRepo();
   const store = createStore();

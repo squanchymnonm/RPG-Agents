@@ -107,7 +107,7 @@ defineExpose({ repoLabel, refresh })
       <GitWork v-if="tab === 'work'" :status="status" :stash="stash" @run="run" @diff="openDiff" />
       <GitBranchDiff v-else-if="tab === 'branch'" :status="status" @diff="openDiff" />
       <GitBranches v-else-if="tab === 'branches'" ref="branchesEl" :id="props.id" :path="props.path" @run="run" />
-      <GitCommits v-else :status="status" @diff="openDiff" />
+      <GitCommits v-else :status="status" :id="props.id" :path="props.path" @diff="openDiff" />
     </div>
 
     <!-- Barra fija: visible desde cualquier sub-pestaña. Es la corrección al
@@ -115,6 +115,7 @@ defineExpose({ repoLabel, refresh })
     <footer v-if="status" class="gp-actions">
       <button class="g-act" :disabled="busy === 'merge-default'"
         @click="run('merge-default', {}, `Traer ${status.overview.default} a la rama?`)">↻ Actualizar</button>
+      <button class="g-act" :disabled="busy === 'fetch'" @click="run('fetch')">Fetch</button>
       <button class="g-act" :disabled="busy === 'pull'" @click="run('pull')">Pull</button>
       <button class="g-act" :disabled="busy === 'push'" @click="run('push')">Push</button>
     </footer>

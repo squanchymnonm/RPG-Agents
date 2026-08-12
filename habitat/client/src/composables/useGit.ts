@@ -21,6 +21,7 @@ export interface GitRepo { rel: string; name: string }
 export interface GitStatus { working: GitWorking; overview: GitOverview; commits: GitCommit[]; repo: GitRepo }
 export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string; dirty?: boolean; branch?: string }
 export interface StashEntry { index: number; message: string }
+export interface LogEntry { sha: string; shortSha: string; subject: string; author: string; date: string }
 export type DiffBase = 'working' | 'staged' | 'branch' | `commit:${string}`
 
 export function useGit() {
@@ -60,6 +61,15 @@ export function useGit() {
     return (await res.json()) as StashEntry[]
   }
 
+  async function loadLog(id: string, path?: string, opts: { limit?: number; skip?: number } = {}): Promise<LogEntry[]> {
+    const extra: Record<string, string> = {}
+    if (opts.limit != null) extra.limit = String(opts.limit)
+    if (opts.skip != null) extra.skip = String(opts.skip)
+    const res = await fetch(`/git/log?${q(id, path, extra)}`, { headers: authHeaders() })
+    if (!res.ok) return []
+    return (await res.json()) as LogEntry[]
+  }
+
   async function action(
     id: string,
     actionName: string,
@@ -75,5 +85,5 @@ export function useGit() {
     return (await res.json()) as GitActionResult
   }
 
-  return { status, loading, error, loadStatus, loadDiff, loadBranches, loadStash, action }
+  return { status, loading, error, loadStatus, loadDiff, loadBranches, loadStash, loadLog, action }
 }
