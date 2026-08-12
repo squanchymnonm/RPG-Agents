@@ -419,8 +419,15 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       }
       if (r === null) { res.writeHead(400).end(); return; }
       // Tras un checkout el branch de la sesión quedó stale: refrescarlo ya, sin
-      // esperar al próximo hook. hooks-logic lo reconfirma después.
-      if (r.ok && r.branch && s.cwd === repo.dir) store.upsert({ ...s, branch: r.branch });
+      // esperar al próximo hook. hooks-logic lo reconfirma después. persist() para
+      // que sobreviva un reinicio, y broadcast para que la card (SessionPod, que
+      // pinta session.branch del snapshot de WS) lo muestre ya, no en el próximo hook.
+      if (r.ok && r.branch && s.cwd === repo.dir) {
+        const updated = { ...s, branch: r.branch };
+        store.upsert(updated);
+        store.persist();
+        hub.broadcast({ type: 'session', session: snapOf(updated) });
+      }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(r));
       return;
     }

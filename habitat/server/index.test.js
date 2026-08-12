@@ -1183,6 +1183,55 @@ test('POST /git/action checkout crea y cambia de rama', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('POST /git/action checkout persiste el branch de la sesión y lo difunde por WS', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server, hub } = createApp({ config, store });
+  const port = await listen(server);
+  // Spy sobre broadcast: sin esto, borrar el store.persist()+hub.broadcast() de
+  // index.js no rompería ningún test (el store.upsert solo ya alcanza para que
+  // la respuesta HTTP tenga branch:'main').
+  const broadcasts = [];
+  const origBroadcast = hub.broadcast.bind(hub);
+  hub.broadcast = (msg) => { broadcasts.push(msg); origBroadcast(msg); };
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'checkout', branch: 'main' }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  // el store en memoria refleja el branch nuevo, no sólo la respuesta HTTP
+  assert.equal(store.get('s1').branch, 'main');
+  // se difundió por WS: la card (SessionPod) pinta session.branch del snapshot,
+  // no espera al próximo hook
+  assert.ok(broadcasts.some((m) => m.type === 'session' && m.session.branch === 'main'));
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('POST /git/action bloquea una segunda escritura concurrente sobre el mismo repo -> 409', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  writeFileSync(join(dir, 'b.js'), 'const b = 2\n');
+  writeFileSync(join(dir, 'c.js'), 'const c = 3\n');
+  const post = (paths) => fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'stage', paths }),
+  });
+  // Disparadas sin esperar entre sí: ambas quedan en vuelo a la vez, así que la
+  // segunda en tomar el lock del repo tiene que chocar con la primera.
+  const [r1, r2] = await Promise.all([post(['b.js']), post(['c.js'])]);
+  assert.deepEqual([r1.status, r2.status].sort(), [200, 409]);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('POST /git/action con acción desconocida -> 400', async () => {
   const { dir } = tmpRepo();
   const store = createStore();
