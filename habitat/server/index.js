@@ -1,8 +1,8 @@
 import { createServer } from 'node:http';
-import { readFile, readdir, realpath, stat, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat, mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, normalize, sep, basename, resolve, relative } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, createWriteStream } from 'node:fs';
 import config from './config.js';
 import { createStore, newSession } from './state.js';
 import { createSettings } from './settings.js';
@@ -26,6 +26,8 @@ import { verifyPassword } from './password.js';
 import { isAuthenticated, parseCookies, COOKIE_NAME } from './auth.js';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..', 'web');
+// Contador de parciales de upload, para que dos subidas simultáneas no pisen el mismo .part.
+let uploadSeq = 0;
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json' };
 
 function snapOf(session) {
@@ -43,24 +45,44 @@ function readBody(req) {
   });
 }
 
-// Lee el body como Buffer, abortando si supera `maxBytes` (cap real de upload,
-// no solo el header Content-Length). Rechaza con 'too large' si se pasa.
-// Con maxBytes=Infinity (bypass por password) NO hay tope: bufferea todo el
-// body en memoria (aceptado por diseño).
-function readBodyCapped(req, maxBytes) {
+// Vuelca el body en `path` a medida que llega, sin bufferearlo en memoria (un dump
+// de 1GB no entra en RAM). Corta si supera `maxBytes` -> rechaza con 'too large'.
+// Ante el corte NO destruye el request: sólo lo pausa, para que el caller pueda
+// responder 413 sobre un socket todavía vivo (ver responderDemasiadoGrande).
+// El archivo parcial queda en disco; borrarlo es responsabilidad del caller.
+function streamBodyToFile(req, path, maxBytes) {
   return new Promise((resolveP, reject) => {
-    const chunks = [];
+    const out = createWriteStream(path);
     let size = 0;
-    let tooBig = false;
-    req.on('data', (c) => {
-      size += c.length;
-      if (size > maxBytes) { tooBig = true; req.destroy(); return; }
-      chunks.push(c);
-    });
-    req.on('end', () => { if (!tooBig) resolveP(Buffer.concat(chunks)); });
-    req.on('error', () => reject(new Error('body error')));
-    req.on('close', () => { if (tooBig) reject(new Error('too large')); });
+    let settled = false;
+    const settle = (err) => {
+      if (settled) return;
+      settled = true;
+      req.off('data', onData);
+      if (err) { out.destroy(); reject(err); }
+      else out.end(() => resolveP(size));
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) { req.pause(); settle(new Error('too large')); return; }
+      // Backpressure: si el disco no da abasto, frenamos la lectura del socket.
+      if (!out.write(chunk)) { req.pause(); out.once('drain', () => req.resume()); }
+    };
+    req.on('data', onData);
+    req.on('end', () => settle(null));
+    req.on('aborted', () => settle(new Error('body error')));
+    req.on('error', () => settle(new Error('body error')));
+    out.on('error', () => settle(new Error('write error')));
   });
+}
+
+// Responde 413 mientras el cliente todavía está subiendo. Dos detalles no negociables:
+// cerrar con FIN (socket.end) y no con destroy -> un RST le borra al cliente la respuesta
+// ya recibida, y el proxy de Tailscale delante lo traduce a un 502 que no dice nada.
+function responderDemasiadoGrande(req, res, { max, needsPassword }) {
+  const body = JSON.stringify({ error: 'too large', max, needsPassword });
+  res.writeHead(413, { 'content-type': 'application/json', connection: 'close' })
+    .end(body, () => req.socket.end());
 }
 
 export function createApp({ config, store, settingsStore = createSettings(), projectsStore, sessionStore = createSessionStore({ persistPath: config.SESSIONS_PATH, ttlMs: config.SESSION_TTL_MS }), tmux = { listSessions, newTmuxSession, killTmuxSession }, git: gitOverrides = {}, editor = { openInEditor } }) {
@@ -445,9 +467,8 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
         configuredPassword: config.UPLOAD_PASSWORD,
         providedPassword: req.headers['x-upload-password'] || '',
       });
-      let body;
-      try { body = await readBodyCapped(req, max); }
-      catch (e) { res.writeHead(e.message === 'too large' ? 413 : 400).end(); return; }
+      // El destino se resuelve ANTES de leer el body: como el body se escribe en disco
+      // a medida que llega, necesitamos el path de destino de entrada.
       const dir = resolveWithinRoot(root, '.habitat-uploads');
       if (!dir) { res.writeHead(400).end(); return; }
       await mkdir(dir, { recursive: true });
@@ -457,11 +478,22 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       try { realDir = await realpath(dir); realRoot = await realpath(root); }
       catch { res.writeHead(400).end(); return; }
       if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) { res.writeHead(400).end(); return; }
-      // readdir->uniqueName->writeFile no es atómico (TOCTOU); aceptable para uso single-user.
+      // readdir->uniqueName->rename no es atómico (TOCTOU); aceptable para uso single-user.
       let taken;
       try { taken = new Set(await readdir(realDir)); } catch { taken = new Set(); }
       const finalName = uniqueName(name, taken);
-      await writeFile(join(realDir, finalName), body);
+      // Se escribe primero en un parcial oculto y recién al final se renombra: así una
+      // subida cortada nunca aparece en el browser como un archivo entero.
+      const partPath = join(realDir, `.subiendo-${uploadSeq++}.part`);
+      try { await streamBodyToFile(req, partPath, max); }
+      catch (e) {
+        await unlink(partPath).catch(() => {});
+        if (e.message === 'too large') {
+          responderDemasiadoGrande(req, res, { max, needsPassword: !!config.UPLOAD_PASSWORD });
+        } else res.writeHead(400).end();
+        return;
+      }
+      await rename(partPath, join(realDir, finalName));
       res.writeHead(200, { 'content-type': 'application/json' })
         .end(JSON.stringify({ rel: join('.habitat-uploads', finalName) }));
       return;
