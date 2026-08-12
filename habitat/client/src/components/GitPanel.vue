@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
 import { useGit, type DiffBase, type StashEntry } from '../composables/useGit'
+import { canCreatePr } from '../composables/gitBranches'
 import { parseDiff, type DiffHunk } from '../composables/parseDiff'
 import { useSessions } from '../stores/sessions'
 import GitWork from './GitWork.vue'
@@ -24,6 +25,7 @@ const stash = ref<StashEntry[]>([])
 // Cuando el checkout falla por árbol sucio, ofrecemos la salida útil en vez de
 // dejar al usuario con un error de git.
 const retry = ref<{ branch: string } | null>(null)
+const prUrl = ref('')
 
 async function refresh() {
   await loadStatus(props.id, props.path)
@@ -62,6 +64,15 @@ async function stashAndRetry() {
   await run('checkout', { branch })
 }
 
+async function doPr() {
+  busy.value = 'pr-create'; actionErr.value = ''; prUrl.value = ''
+  const r = await action(props.id, 'pr-create', { path: props.path })
+  busy.value = ''
+  if (r.url) prUrl.value = r.url
+  if (!r.ok) actionErr.value = r.message || 'no se pudo crear el PR'
+  await refresh()
+}
+
 // Refresh live: cada broadcast WS hace store.upsert -> la sesión seleccionada
 // cambia de identidad; debounced para no spamear git.
 let t: ReturnType<typeof setTimeout> | null = null
@@ -84,6 +95,7 @@ const repoLabel = computed(() => {
   const { branch, ahead, behind } = status.value.overview
   return { name: status.value.repo.name || status.value.repo.rel || '·', branch, ahead, behind }
 })
+const pr = computed(() => (status.value ? canCreatePr(status.value.overview) : { can: false, why: '' }))
 defineExpose({ repoLabel, refresh })
 </script>
 
@@ -98,6 +110,7 @@ defineExpose({ repoLabel, refresh })
 
     <p v-if="error" class="g-err">{{ error === 'sin-dir' ? 'sin repo git acá' : error }}</p>
     <p v-if="actionErr" class="g-err">{{ actionErr }}</p>
+    <p v-if="prUrl" class="gp-pr"><a :href="prUrl" target="_blank" rel="noopener">{{ prUrl }}</a></p>
     <p v-if="retry" class="g-err">
       <button class="g-mini" @click="stashAndRetry">Stashear y reintentar</button>
     </p>
@@ -118,6 +131,8 @@ defineExpose({ repoLabel, refresh })
       <button class="g-act" :disabled="busy === 'fetch'" @click="run('fetch')">Fetch</button>
       <button class="g-act" :disabled="busy === 'pull'" @click="run('pull')">Pull</button>
       <button class="g-act" :disabled="busy === 'push'" @click="run('push')">Push</button>
+      <button class="g-act" :disabled="busy === 'pr-create' || !pr.can" :title="pr.why"
+        @click="doPr">PR</button>
     </footer>
 
     <GitDiff v-if="diff" :file="diff.file" :hunks="diff.hunks" :binary="diff.binary" @close="diff = null" />
@@ -131,4 +146,6 @@ defineExpose({ repoLabel, refresh })
 .gp-tabs button.on { background: var(--color-brass, #c79a4b); color: #1a1410; font-weight: 700; }
 .gp-body { flex: 1; overflow: auto; padding: .5rem .75rem; }
 .gp-actions { display: flex; flex-wrap: wrap; gap: .4rem; padding: .5rem .75rem; border-top: 1px solid var(--color-line, #3a2e22); }
+.gp-pr { padding: 0 .75rem; font-size: .8rem; word-break: break-all; }
+.gp-pr a { color: var(--color-brass, #c79a4b); }
 </style>

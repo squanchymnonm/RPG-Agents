@@ -1297,6 +1297,26 @@ test('POST /git/action con acción desconocida -> 400', async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('POST /git/action pr-create devuelve ok:false con mensaje si no hay gh usable', async () => {
+  const { dir } = tmpRepo();
+  const store = createStore();
+  store.upsert({ id: 's1', cwd: dir, name: 'proj', status: 'working' });
+  const { server } = createApp({ config, store });
+  const port = await listen(server);
+  const res = await fetch(`http://127.0.0.1:${port}/git/action?id=s1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ action: 'pr-create' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  // El repo temporal no tiene remoto: falla, pero con mensaje, no con 500.
+  assert.equal(body.ok, false);
+  assert.ok(typeof body.message === 'string' && body.message.length > 0);
+  server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('stash: push, list y pop por endpoint', async () => {
   const { dir } = tmpRepo();
   const store = createStore();

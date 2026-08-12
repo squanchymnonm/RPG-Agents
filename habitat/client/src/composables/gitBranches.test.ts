@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupBranches } from './gitBranches'
+import { groupBranches, canCreatePr } from './gitBranches'
 
 const data = {
   current: 'link',
@@ -56,5 +56,25 @@ describe('groupBranches', () => {
   it('remote.short sale bien con un remote que no es origin', () => {
     const { remote } = groupBranches(dataUpstreamRemote, '')
     expect(remote.map((r) => r.short)).toEqual(['foo'])
+  })
+})
+
+describe('canCreatePr', () => {
+  const base = { branch: 'feature/x', default: 'origin/main', ahead: 0, behind: 0, files: [] }
+
+  it('permite cuando la rama difiere del default y no hay nada sin pushear', () => {
+    expect(canCreatePr({ ...base, files: [{ rel: 'a.js', status: 'M' }] })).toEqual({ can: true, why: '' })
+  })
+
+  it('advierte pero no bloquea si hay commits por delante del default', () => {
+    const r = canCreatePr({ ...base, ahead: 2 })
+    expect(r.can).toBe(true)
+    expect(r.why).toMatch(/sin pushear/)
+  })
+
+  it('bloquea si estás en la rama default', () => {
+    const r = canCreatePr({ ...base, branch: 'main' })
+    expect(r.can).toBe(false)
+    expect(r.why).toMatch(/default/)
   })
 })

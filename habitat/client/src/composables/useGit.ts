@@ -19,7 +19,7 @@ export interface GitCommit { sha: string; shortSha: string; subject: string; pus
 export interface GitWorking { staged: GitFile[]; unstaged: GitFile[]; untracked: GitFile[]; conflicted: GitFile[] }
 export interface GitRepo { rel: string; name: string }
 export interface GitStatus { working: GitWorking; overview: GitOverview; commits: GitCommit[]; repo: GitRepo }
-export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string; dirty?: boolean; branch?: string }
+export interface GitActionResult { ok: boolean; conflict?: boolean; files?: string[]; code?: number; message?: string; dirty?: boolean; branch?: string; url?: string }
 export interface StashEntry { index: number; message: string }
 export interface LogEntry { sha: string; shortSha: string; subject: string; author: string; date: string }
 export type DiffBase = 'working' | 'staged' | 'branch' | `commit:${string}`

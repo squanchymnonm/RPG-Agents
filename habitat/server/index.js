@@ -17,6 +17,7 @@ import { workingStatus, branchOverview, commits as gitCommits, filePatch, fullLo
 import * as gitWrite from './git-write.js';
 import * as gitBranches from './git-branches.js';
 import * as gitStash from './git-stash.js';
+import { prCreate } from './gh.js';
 import { createLocks } from './locks.js';
 import { worktreePaths, worktreeName } from './worktree.js';
 import { resolveWithinRoot, sanitizeFilename, uniqueName, maxUploadBytes } from './files.js';
@@ -465,6 +466,7 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
             case 'stash-drop': return gitStash.stashDrop(repo.dir, index);
             case 'fetch': return gitWrite.fetchRemote(repo.dir);
             case 'amend': return gitWrite.amend(repo.dir, message);
+            case 'pr-create': return prCreate(repo.dir);
             default: return null; // acción desconocida
           }
         });

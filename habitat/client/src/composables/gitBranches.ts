@@ -1,3 +1,5 @@
+import type { GitOverview } from './useGit'
+
 export interface BranchRow { name: string; worktree: string; current: boolean }
 export interface BranchList { current: string; default: string; local: BranchRow[]; remote: string[] }
 
@@ -24,4 +26,15 @@ export function groupBranches(data: BranchList, filter: string) {
       .map((name) => ({ name, short: name.slice(name.indexOf('/') + 1) }))
       .filter((r) => !localNames.has(r.short) && match(r.short)),
   }
+}
+
+// El botón sólo se bloquea de verdad estando en la rama default (un PR de main a
+// main no existe). Con commits por delante advierte pero deja intentar: `ahead`
+// cuenta contra el default, no contra origin/<branch>, así que no alcanza para
+// afirmar que falta pushear.
+export function canCreatePr(overview: GitOverview): { can: boolean; why: string } {
+  const def = overview.default.slice(overview.default.indexOf('/') + 1)
+  if (overview.branch === def) return { can: false, why: `estás en la rama default (${def})` }
+  if (overview.ahead > 0) return { can: true, why: `${overview.ahead} commit(s) sin pushear: pusheá primero si gh falla` }
+  return { can: true, why: '' }
 }
