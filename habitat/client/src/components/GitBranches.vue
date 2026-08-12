@@ -10,12 +10,20 @@ const emit = defineEmits<{
 
 const { loadBranches } = useGit()
 const data = ref<BranchList | null>(null)
+const failed = ref(false)
 const filter = ref('')
 const creating = ref(false)
 const newName = ref('')
 const newFrom = ref<'default' | 'HEAD'>('default')
 
-async function refresh() { data.value = await loadBranches(props.id, props.path) }
+// `failed` distingue "todavía cargando" de "no se pudo cargar": sin él, con la red
+// caída la pestaña quedaba en "cargando ramas…" para siempre.
+async function refresh() {
+  failed.value = false
+  const r = await loadBranches(props.id, props.path)
+  data.value = r
+  failed.value = r === null
+}
 watch(() => [props.id, props.path] as const, refresh, { immediate: true })
 
 const groups = computed(() => (data.value ? groupBranches(data.value, filter.value) : null))
@@ -58,13 +66,20 @@ defineExpose({ refresh })
 
     <h4 v-if="groups.remote.length">remotas</h4>
     <ul class="g-group">
+      <!-- checkout, no branch-create: `git switch <short>` DWIMea la rama remota
+           (la crea local siguiendo a origin/<short>, con SU contenido). Con
+           branch-create/from:HEAD la rama nueva salía del HEAD local, sin el trabajo
+           de la remota y sin upstream — y como groupBranches esconde las remotas que
+           ya tienen local homónima, la remota real desaparecía de la lista. -->
       <li v-for="r in groups.remote" :key="r.name">
         <span class="g-st"></span>
         <span class="gb-flat">{{ r.name }}</span>
-        <button class="g-mini" @click="emit('run', 'branch-create', { branch: r.short, from: 'HEAD' })">crear local</button>
+        <button class="g-mini" :title="`crear la rama local ${r.short} siguiendo a ${r.name}`"
+          @click="doCheckout(r.short)">traer</button>
       </li>
     </ul>
   </div>
+  <p v-else-if="failed" class="g-err">no se pudieron cargar las ramas</p>
   <p v-else class="g-muted">cargando ramas…</p>
 </template>
 

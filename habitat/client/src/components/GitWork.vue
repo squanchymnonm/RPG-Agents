@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import type { GitStatus, GitFile, DiffBase, StashEntry } from '../composables/useGit'
 
 const props = defineProps<{ status: GitStatus; stash: StashEntry[] }>()
@@ -16,11 +16,20 @@ function doCommit() {
   emit('run', 'commit', { message: commitMsg.value })
   commitMsg.value = ''
 }
+// overview.branch viene vacío cuando HEAD es unborn (`rev-parse --abbrev-ref HEAD`
+// falla en un repo sin ningún commit): no hay nada que amendear.
+const canAmend = computed(() => !!props.status.overview.branch)
+
+// status.commits son los commits en default..HEAD. El aviso estaba invertido:
+// con la lista vacía `last` era undefined y `warn` undefined -> amend SIN
+// confirmación, y ése es justo el caso en que HEAD está garantizado publicado (no
+// hay nada local por encima del default). Ahora se avisa salvo que se sepa
+// positivamente que el último commit NO está pusheado.
 function doAmend() {
   const last = props.status.commits[0]
-  const warn = last?.pushed
-    ? 'El último commit ya está pusheado: el amend reescribe historia y el próximo push va a ser rechazado (habría que forzarlo desde la terminal). Seguir?'
-    : undefined
+  const warn = last && !last.pushed
+    ? undefined
+    : 'El último commit ya está publicado: el amend reescribe historia y el próximo push va a ser rechazado (habría que forzarlo desde la terminal). Seguir?'
   emit('run', 'amend', { message: commitMsg.value }, warn)
   commitMsg.value = ''
 }
@@ -88,7 +97,9 @@ function doAmend() {
   <div class="g-commit">
     <input v-model="commitMsg" placeholder="mensaje de commit" @keyup.enter="doCommit" />
     <button class="g-act" :disabled="!commitMsg.trim()" @click="doCommit">Commit</button>
-    <button class="g-act" @click="doAmend">amend</button>
+    <button class="g-act" :disabled="!canAmend"
+      :title="canAmend ? 'reescribe el último commit' : 'el repo todavía no tiene commits'"
+      @click="doAmend">amend</button>
   </div>
 </template>
 

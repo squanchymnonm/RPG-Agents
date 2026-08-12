@@ -55,12 +55,15 @@ async function run(name: string, payload: Record<string, unknown> = {}, confirmM
   await branchesEl.value?.refresh()
 }
 
+// El stash va por run(), no por action() directo: así toma `busy` (el botón no admite
+// doble click) y limpia el actionErr del checkout que falló — con action() directo ese
+// error quedaba visible como si el stash hubiera fallado.
 async function stashAndRetry() {
   const branch = retry.value?.branch
   if (!branch) return
   retry.value = null
-  const s = await action(props.id, 'stash-push', { path: props.path, message: `auto antes de ir a ${branch}` })
-  if (!s.ok) { actionErr.value = s.message || 'no se pudo stashear'; return }
+  await run('stash-push', { message: `auto antes de ir a ${branch}` })
+  if (actionErr.value) return // el stash falló: no encadenar el checkout encima
   await run('checkout', { branch })
 }
 
@@ -100,6 +103,18 @@ const repoLabel = computed(() => {
   return { name: status.value.repo.name || status.value.repo.rel || '·', branch, ahead, behind }
 })
 const pr = computed(() => (status.value ? canCreatePr(status.value.overview) : { can: false, why: '' }))
+// Traduce el discriminante del 409 (ver reason409 en useGit) a algo que se entienda.
+// 'repo-arriba' era el caso mentiroso: el panel decía "sin repo git acá" cuando SÍ
+// había repo y el motivo real era que su raíz está fuera del alcance de la sesión.
+const errMsg = computed(() => {
+  switch (error.value) {
+    case 'sin-repo': return 'sin repo git acá'
+    case 'sin-sesion': return 'este pod no tiene un directorio asociado'
+    case 'repo-arriba': return 'el repo está por encima del directorio de la sesión: fuera de alcance'
+    case 'repo-afuera': return 'el repo apunta fuera del directorio de la sesión: fuera de alcance'
+    default: return error.value
+  }
+})
 defineExpose({ repoLabel, refresh })
 </script>
 
@@ -112,11 +127,11 @@ defineExpose({ repoLabel, refresh })
       <button :class="{ on: tab === 'commits' }" @click="tab = 'commits'">Commits</button>
     </nav>
 
-    <p v-if="error" class="g-err">{{ error === 'sin-dir' ? 'sin repo git acá' : error }}</p>
+    <p v-if="error" class="g-err">{{ errMsg }}</p>
     <p v-if="actionErr" class="g-err">{{ actionErr }}</p>
     <p v-if="prUrl" class="gp-pr"><a :href="prUrl" target="_blank" rel="noopener">{{ prUrl }}</a></p>
     <p v-if="retry" class="g-err">
-      <button class="g-mini" @click="stashAndRetry">Stashear y reintentar</button>
+      <button class="g-mini" :disabled="!!busy" @click="stashAndRetry">Stashear y reintentar</button>
     </p>
     <p v-if="loading" class="g-muted">cargando…</p>
 
