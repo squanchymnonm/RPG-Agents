@@ -5,6 +5,7 @@ import { parseDiff, type DiffHunk } from '../composables/parseDiff'
 import { useSessions } from '../stores/sessions'
 import GitWork from './GitWork.vue'
 import GitBranchDiff from './GitBranchDiff.vue'
+import GitBranches from './GitBranches.vue'
 import GitCommits from './GitCommits.vue'
 import GitDiff from './GitDiff.vue'
 import '../styles/git.css'
@@ -14,7 +15,8 @@ const props = defineProps<{ id: string; path: string }>()
 const store = useSessions()
 const { status, loading, error, loadStatus, loadDiff, action } = useGit()
 
-const tab = ref<'work' | 'branch' | 'commits'>('work')
+const tab = ref<'work' | 'branches' | 'commits' | 'branch'>('work')
+const branchesEl = ref<InstanceType<typeof GitBranches> | null>(null)
 const diff = ref<{ file: string; hunks: DiffHunk[]; binary: boolean } | null>(null)
 const busy = ref('')
 const actionErr = ref('')
@@ -29,13 +31,14 @@ async function openDiff(file: string, base: DiffBase) {
   } catch { actionErr.value = 'no se pudo cargar el diff' }
 }
 
-async function run(name: string, payload: { paths?: string[]; message?: string } = {}, confirmMsg?: string) {
+async function run(name: string, payload: Record<string, unknown> = {}, confirmMsg?: string) {
   if (confirmMsg && !confirm(confirmMsg)) return
   busy.value = name; actionErr.value = ''
   const r = await action(props.id, name, { path: props.path, ...payload })
   busy.value = ''
   if (!r.ok) actionErr.value = r.conflict ? `Conflicto en: ${(r.files ?? []).join(', ')}` : (r.message || 'falló')
   await refresh()
+  await branchesEl.value?.refresh()
 }
 
 // Refresh live: cada broadcast WS hace store.upsert -> la sesión seleccionada
@@ -60,6 +63,7 @@ defineExpose({ repoLabel, refresh })
     <nav class="gp-tabs">
       <button :class="{ on: tab === 'work' }" @click="tab = 'work'">Trabajo</button>
       <button :class="{ on: tab === 'branch' }" @click="tab = 'branch'">Rama</button>
+      <button :class="{ on: tab === 'branches' }" @click="tab = 'branches'">Branches</button>
       <button :class="{ on: tab === 'commits' }" @click="tab = 'commits'">Commits</button>
     </nav>
 
@@ -70,6 +74,7 @@ defineExpose({ repoLabel, refresh })
     <div v-if="status" class="gp-body">
       <GitWork v-if="tab === 'work'" :status="status" @run="run" @diff="openDiff" />
       <GitBranchDiff v-else-if="tab === 'branch'" :status="status" @diff="openDiff" />
+      <GitBranches v-else-if="tab === 'branches'" ref="branchesEl" :id="props.id" :path="props.path" @run="run" />
       <GitCommits v-else :status="status" @diff="openDiff" />
     </div>
 

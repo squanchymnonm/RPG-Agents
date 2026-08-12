@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import type { BranchList } from './gitBranches'
 
 const token = () => new URLSearchParams(location.search).get('token') ?? ''
 const authHeaders = (): Record<string, string> => {
@@ -46,6 +47,12 @@ export function useGit() {
     return (await res.json()) as { binary: boolean; patch: string }
   }
 
+  async function loadBranches(id: string, path?: string): Promise<BranchList | null> {
+    const res = await fetch(`/git/branches?${q(id, path)}`, { headers: authHeaders() })
+    if (!res.ok) return null
+    return (await res.json()) as BranchList
+  }
+
   async function action(
     id: string,
     actionName: string,
@@ -61,5 +68,5 @@ export function useGit() {
     return (await res.json()) as GitActionResult
   }
 
-  return { status, loading, error, loadStatus, loadDiff, action }
+  return { status, loading, error, loadStatus, loadDiff, loadBranches, action }
 }
