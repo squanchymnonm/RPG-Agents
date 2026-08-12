@@ -37,9 +37,16 @@ defineExpose({ listing })
 </script>
 
 <template>
-  <p v-if="actionErr" class="pe-err">{{ actionErr }}</p>
+  <!-- Una sola raíz, a propósito. Antes el template arrancaba con dos nodos (el
+       <p> del error y este <div>), o sea raíz de fragmento, y Vue no puede
+       aplicar v-show a eso: el `v-show="tab === 'files'"` del ProjectExplorer se
+       ignoraba en silencio, así que el explorador de archivos se renderizaba
+       SIEMPRE y la pestaña Git nunca lo tapaba — el panel git quedaba apretado
+       en el espacio sobrante en vez de ocupar el cuerpo. -->
+  <div class="pf-root">
+    <p v-if="actionErr" class="pe-err">{{ actionErr }}</p>
 
-  <div class="pe-body">
+    <div class="pe-body">
     <ul class="pe-list">
       <li v-if="loading" class="pe-muted">cargando…</li>
       <li v-else-if="error === 'sin-dir'" class="pe-muted">sesión sin working dir</li>
@@ -62,10 +69,14 @@ defineExpose({ listing })
       <p v-else class="pe-muted">archivo muy grande ({{ preview.content.size }} bytes) — <button class="pe-edit" @click="editInNvim(preview.path)">abrir en nvim</button></p>
     </div>
     <div class="pe-preview pe-empty" v-else><p class="pe-muted">Elegí un archivo para previsualizar. Doble-click o "editar en nvim" para editarlo.</p></div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* La raíz hereda el rol que antes tenía el .pe-body de adentro frente al
+   contenedor: ocupar el cuerpo y dejar que el hijo scrollee. */
+.pf-root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .pe-err { color: #d2553f; padding: 0 .75rem; font-size: .82rem; }
 .pe-body { flex: 1; display: flex; min-height: 0; }
 .pe-list { list-style: none; margin: 0; padding: .3rem 0; overflow: auto; width: 38%; border-right: 1px solid var(--color-line, #3a2e22); }

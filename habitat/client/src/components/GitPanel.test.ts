@@ -50,7 +50,7 @@ describe('GitPanel — retry de checkout sucio', () => {
 
     // Vamos a la pestaña Branches: es la que emite 'checkout'.
     const tabs = w.findAll('.gp-tabs button')
-    const branchesTab = tabs.find((b) => b.text() === 'Branches')
+    const branchesTab = tabs.find((b) => b.text().includes('Ramas'))
     await branchesTab!.trigger('click')
     await flushPromises()
 
@@ -68,7 +68,7 @@ describe('GitPanel — retry de checkout sucio', () => {
     await flushPromises()
 
     const tabs = w.findAll('.gp-tabs button')
-    const branchesTab = tabs.find((b) => b.text() === 'Branches')
+    const branchesTab = tabs.find((b) => b.text().includes('Ramas'))
     await branchesTab!.trigger('click')
     await flushPromises()
 
@@ -89,7 +89,7 @@ describe('GitPanel — retry de checkout sucio', () => {
     await flushPromises()
 
     const tabs = w.findAll('.gp-tabs button')
-    const branchesTab = tabs.find((b) => b.text() === 'Branches')
+    const branchesTab = tabs.find((b) => b.text().includes('Ramas'))
     await branchesTab!.trigger('click')
     await flushPromises()
 
@@ -131,7 +131,7 @@ describe('GitPanel — el stash del retry pasa por run()', () => {
 
     const w = mount(GitPanel, { props: { id: 's1', path: '' } })
     await flushPromises()
-    await w.findAll('.gp-tabs button').find((b) => b.text() === 'Branches')!.trigger('click')
+    await w.findAll('.gp-tabs button').find((b) => b.text().includes('Ramas'))!.trigger('click')
     await flushPromises()
 
     w.findComponent(GitBranches).vm.$emit('run', 'checkout', { branch: 'feature-x' })
@@ -139,7 +139,7 @@ describe('GitPanel — el stash del retry pasa por run()', () => {
     expect(w.text()).toContain('Stashear y reintentar') // precondición
 
     calls.length = 0
-    await w.findAll('.g-mini').find((b) => b.text() === 'Stashear y reintentar')!.trigger('click')
+    await w.findAll('.g-btn').find((b) => b.text() === 'Stashear y reintentar')!.trigger('click')
     await flushPromises()
 
     const iStash = calls.indexOf('action:stash-push')
@@ -219,7 +219,7 @@ describe('GitPanel — prUrl no se filtra entre repos', () => {
     const w = mount(GitPanel, { props: { id: 's1', path: '' } })
     await flushPromises()
 
-    const prButton = w.findAll('.g-act').find((b) => b.text() === 'PR')
+    const prButton = w.findAll('.g-btn').find((b) => b.text() === 'PR')
     await prButton!.trigger('click')
     await flushPromises()
 
