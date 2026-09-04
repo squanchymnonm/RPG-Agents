@@ -15,7 +15,7 @@ import TermKeys from './TermKeys.vue'
 import { useTermKeys } from '../composables/useTermKeys'
 
 const store = useSessions()
-const { canSpawn, kill, colorForProject } = useProjects()
+const { canSpawn, kill, colorForProject, dockerStatus, dockerDown } = useProjects()
 const selectedId = computed(() => store.selected?.id ?? null)
 const termEl = ref<HTMLElement | null>(null)
 const { fit, insert, getSelection, copySelection, pasteClipboard, copyVisible, selectMode, sendKey } =
@@ -43,6 +43,34 @@ function closeSession() {
   const s = store.selected
   if (!s) return
   if (confirm(`¿Cerrar la sesión "${s.name}"? Se perderá el trabajo en curso.`)) kill(s.id)
+}
+
+// Docker: stacks levantados dentro del worktree de la sesión. Al cerrarla se bajan solos;
+// el botón es para liberar puertos/RAM sin cerrar. Sólo aparece si hay algo que bajar.
+const dockerStacks = ref<string[]>([])
+const dockerBusy = ref(false)
+
+async function refreshDocker() {
+  const id = selectedId.value
+  dockerStacks.value = []
+  if (!canSpawn.value || !id) return
+  const stacks = await dockerStatus(id)
+  if (selectedId.value === id) dockerStacks.value = stacks // la selección pudo cambiar mientras tanto
+}
+watch(selectedId, refreshDocker, { immediate: true })
+
+async function downDocker() {
+  const id = selectedId.value
+  if (!id || dockerBusy.value) return
+  const list = dockerStacks.value.join(', ')
+  if (!confirm(`¿Bajar los containers de esta sesión?\n\n${list}\n\nSe eliminan containers y red; los volúmenes con datos quedan.`)) return
+  dockerBusy.value = true
+  try {
+    await dockerDown(id)
+  } finally {
+    dockerBusy.value = false
+  }
+  refreshDocker()
 }
 
 // Menú contextual de la terminal (copiar / pegar). El navegador reserva Ctrl+Shift+C
@@ -130,6 +158,13 @@ defineExpose({ fit })
           <button class="tool" @click="filesOpen = !filesOpen" title="Archivos"><img :src="bagSrc" alt="" />Archivos</button>
           <button class="tool" @click="openProject('git')" title="Cambios git">⌥ Cambios</button>
           <button class="tool" @click="openProject('files')" title="Explorador de proyecto">🗂 Proyecto</button>
+          <button
+            v-if="canSpawn && dockerStacks.length"
+            class="tool"
+            :disabled="dockerBusy"
+            :title="`Bajar containers: ${dockerStacks.join(', ')}`"
+            @click="downDocker"
+          >🐳 {{ dockerBusy ? 'Bajando…' : `Bajar docker (${dockerStacks.length})` }}</button>
           <button v-if="canSpawn" class="tool danger" @click="closeSession">✕ Cerrar</button>
         </div>
       </div>
@@ -364,6 +399,7 @@ defineExpose({ fit })
 .tool:hover { border-color: var(--color-brass-2); color: var(--color-brass); }
 .tool img { width: 16px; height: 16px; image-rendering: pixelated; }
 .tool.danger:hover { border-color: var(--color-crimson); color: var(--color-crimson); }
+.tool:disabled { opacity: .55; cursor: default; border-color: var(--color-edge); color: var(--color-ink-2); }
 
 /* ===== Terminal (hero surface) ===== */
 .term {

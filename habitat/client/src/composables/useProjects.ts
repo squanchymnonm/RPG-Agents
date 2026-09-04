@@ -123,10 +123,36 @@ async function kill(id: string): Promise<boolean> {
   }
 }
 
+// Stacks de docker levantados dentro del worktree de la sesión. [] si no hay ninguno,
+// si la sesión es plana (repo principal) o si docker no está disponible.
+async function dockerStatus(id: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/docker/status?id=${encodeURIComponent(id)}`, { headers: authHeaders() })
+    if (!res.ok) return []
+    const data = (await res.json()) as { stacks?: string[] }
+    return data.stacks ?? []
+  } catch {
+    return []
+  }
+}
+
+// Baja esos stacks (containers + red; los volúmenes con datos quedan). Devuelve los
+// proyectos efectivamente bajados.
+async function dockerDown(id: string): Promise<string[]> {
+  try {
+    const res = await fetch('/docker/down', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ id }) })
+    if (!res.ok) return []
+    const data = (await res.json()) as { stacks?: string[] }
+    return data.stacks ?? []
+  } catch {
+    return []
+  }
+}
+
 export function useProjects() {
   if (!loaded) {
     loaded = true
     load()
   }
-  return { canSpawn, canManage, projects, error, spawn, kill, browse, addProject, updateProject, removeProject, colorForProject }
+  return { canSpawn, canManage, projects, error, spawn, kill, browse, addProject, updateProject, removeProject, colorForProject, dockerStatus, dockerDown }
 }
