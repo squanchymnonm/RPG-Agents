@@ -22,6 +22,7 @@
 - 📖 **Libro de Quests** — un log de quests y diálogos por sesión, construido desde el historial de TODOs.
 - 📱 **Acceso desde tablet/celular** — Tailscale Serve (HTTPS dentro de tu tailnet) + login con usuario/contraseña y cookie de sesión persistente. UX táctil amigable.
 - 🌲 **Worktrees / multi-agent** — cada sesión creada recibe su propio git worktree y sesión tmux, para que múltiples agentes trabajen el mismo repo en paralelo en ramas separadas.
+- 🐳 **Limpieza de docker** — los containers que una sesión levantó dentro de su worktree se paran y eliminan al cerrarla (y al arrancar se barren los huérfanos), así no quedan puertos ni RAM tomados. Los volúmenes con nombre se conservan, y nunca se toca un container de fuera del directorio de worktrees.
 - 🔥 **Warm Forge redesign** — un rediseño visual premium con fuentes self-hosted y Tailwind v4.
 - ⚙️ **Settings** — gestioná proyectos desde la UI: colores por proyecto, allowlists de personajes. Se persiste entre reinicios.
 
@@ -224,6 +225,7 @@ Specs y planes de diseño en `docs/superpowers/`.
 
 | Variable | Default | Para qué |
 |---|---|---|
+| `HABITAT_DOCKER_CLEANUP` | `1` | `0` desactiva la limpieza automática de docker (al cerrar la sesión y al arrancar). El botón manual del panel sigue funcionando. |
 | `HABITAT_EDITOR` | `nvim` | Comando del editor que se lanza en la ventana tmux de edición al abrir archivos. |
 | `HABITAT_FILE_MAX_BYTES` | `1048576` (1 MB) | Tamaño máximo de archivo para la preview inline via `/file`. |
 | `HABITAT_PREVIEW_LINES` | `30` | Cantidad de líneas de terminal capturadas por `/preview`. |

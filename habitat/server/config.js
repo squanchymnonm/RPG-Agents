@@ -29,4 +29,7 @@ export default {
   COOKIE_SECURE: process.env.HABITAT_COOKIE_SECURE == null ? true : bool(process.env.HABITAT_COOKIE_SECURE),
   SESSIONS_PATH: process.env.HABITAT_SESSIONS || join(HERE, '..', '.sessions.json'),
   EDITOR: process.env.HABITAT_EDITOR || 'nvim',
+  // Limpieza de containers docker de una sesión (al cerrarla y al arrancar). On por
+  // defecto; HABITAT_DOCKER_CLEANUP=0 apaga los automatismos (el botón manual sigue).
+  DOCKER_CLEANUP: process.env.HABITAT_DOCKER_CLEANUP == null ? true : bool(process.env.HABITAT_DOCKER_CLEANUP),
 };

@@ -20,6 +20,7 @@ import * as gitStash from './git-stash.js';
 import { prCreate } from './gh.js';
 import { createLocks } from './locks.js';
 import { worktreePaths, worktreeName } from './worktree.js';
+import { downForDir, downOrphans } from './docker.js';
 import { resolveWithinRoot, sanitizeFilename, uniqueName, maxUploadBytes } from './files.js';
 import { openInEditor } from './editor.js';
 import { CHARACTERS, autoName } from './characters.js';
@@ -87,7 +88,7 @@ function responderDemasiadoGrande(req, res, { max, needsPassword }) {
     .end(body, () => req.socket.end());
 }
 
-export function createApp({ config, store, settingsStore = createSettings(), projectsStore, sessionStore = createSessionStore({ persistPath: config.SESSIONS_PATH, ttlMs: config.SESSION_TTL_MS }), tmux = { listSessions, newTmuxSession, killTmuxSession }, git: gitOverrides = {}, editor = { openInEditor } }) {
+export function createApp({ config, store, settingsStore = createSettings(), projectsStore, sessionStore = createSessionStore({ persistPath: config.SESSIONS_PATH, ttlMs: config.SESSION_TTL_MS }), tmux = { listSessions, newTmuxSession, killTmuxSession }, git: gitOverrides = {}, editor = { openInEditor }, docker = { downForDir, downOrphans } }) {
   const git = { worktreeAdd, worktreeRemove, findNestedRepos, containerWorktreeAdd, remoteDefaultBranch, ...gitOverrides };
   const projects = projectsStore || createProjects({ seed: config.PROJECTS });
   const locks = createLocks();
@@ -134,6 +135,26 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
     store.upsert(s);
     store.persist();
     if (hub) hub.broadcast({ type: 'session', session: snapOf(s) });
+  }
+
+  // Path del worktree de la sesión, o null si es una sesión "plana" (abierta sobre el
+  // repo principal). La distinción importa para docker: en un worktree los containers los
+  // levantó esta sesión; en el repo principal son el entorno de desarrollo del usuario.
+  function sessionWorktree(s) {
+    if (!config.WORKTREES_DIR || !s || !s.project || !s.branch || !s.tmux || s.tmux === s.project) return null;
+    return worktreePaths(config.WORKTREES_DIR, s.project, s.branch).path;
+  }
+
+  // Baja (o lista, con dryRun) los stacks de compose de un worktree. Best-effort: si el
+  // daemon no está o docker no existe, devolvemos [] y seguimos — cerrar una sesión nunca
+  // puede fallar por docker.
+  async function dockerDown(dir, { dryRun = false } = {}) {
+    try {
+      return await docker.downForDir(dir, { root: config.WORKTREES_DIR, dryRun });
+    } catch (err) {
+      console.error('[habitat] docker down falló (ignorado):', err && err.message);
+      return [];
+    }
   }
 
   // Lista de proyectos en el shape que consume el cliente (name = label).
@@ -695,23 +716,52 @@ export function createApp({ config, store, settingsStore = createSettings(), pro
       // Sesión por rama (worktree): el tmux es `<proyecto>-<rama>` y difiere del proyecto.
       // Limpiamos el worktree para no dejar la carpeta huérfana (que haría fallar un re-spawn
       // de la misma rama). Best-effort: si tiene cambios sin commitear git lo deja en disco.
-      if (config.WORKTREES_DIR && s.project && s.branch && s.tmux && s.tmux !== s.project) {
+      const wtPath = sessionWorktree(s);
+      if (wtPath) {
+        // Docker primero: el compose file vive DENTRO del worktree, así que hay que bajar
+        // los stacks antes de borrarlo. Best-effort: no altera la respuesta del endpoint.
+        if (config.DOCKER_CLEANUP) await dockerDown(wtPath);
         const projectDir = (projects.list().find((p) => basename(p.dir) === s.project) || {}).dir;
         if (projectDir) {
-          const { path } = worktreePaths(config.WORKTREES_DIR, s.project, s.branch);
           const nested = await git.findNestedRepos(projectDir);
           // Contenedor: remover primero los hijos (sin force: si hay cambios sin commitear git
           // rechaza y se deja en disco), luego el padre. Si un hijo queda, el padre tampoco se
           // borra (su carpeta no queda vacía) -> el conjunto sobrevive y un re-spawn lo reutiliza.
           for (const name of nested) {
-            await git.worktreeRemove(join(projectDir, name), join(path, name));
+            await git.worktreeRemove(join(projectDir, name), join(wtPath, name));
           }
-          await git.worktreeRemove(projectDir, path);
+          await git.worktreeRemove(projectDir, wtPath);
         }
       }
       store.remove(id); // ya persiste a disco
       hub.broadcast({ type: 'remove', id });
       res.writeHead(200).end();
+      return;
+    }
+
+    // Docker de la sesión: listar (status) y bajar (down) los stacks levantados dentro
+    // del worktree. Mismo cerco que /kill (ALLOW_SPAWN) porque baja procesos del usuario.
+    if (url.pathname === '/docker/status' || url.pathname === '/docker/down') {
+      const isDown = url.pathname === '/docker/down';
+      if (req.method !== (isDown ? 'POST' : 'GET')) { res.writeHead(405).end(); return; }
+      if (!authorize(req, res)) return;
+      if (!config.ALLOW_SPAWN) { res.writeHead(403).end(); return; }
+      let id;
+      if (isDown) {
+        let body;
+        try { body = JSON.parse(await readBody(req)); } catch { res.writeHead(400).end(); return; }
+        id = body && body.id;
+        if (typeof id !== 'string' || !id) { res.writeHead(400).end(); return; }
+      } else {
+        id = url.searchParams.get('id') || '';
+      }
+      const s = store.get(id);
+      if (!s) { res.writeHead(404).end(); return; }
+      const wt = sessionWorktree(s);
+      // Sesión plana (repo principal): sus containers son el entorno del usuario, no algo
+      // que levantó hábitat. No los listamos ni los bajamos.
+      const stacks = wt ? await dockerDown(wt, { dryRun: !isDown }) : [];
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ stacks }));
       return;
     }
 
@@ -829,4 +879,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   server.listen(config.PORT, config.BIND, () => {
     console.log(`hábitat en http://${config.BIND}:${config.PORT}`);
   });
+  // Barrido de huérfanos: containers levantados en worktrees que ya no existen (sesiones
+  // cerradas antes de esta limpieza, o caídas del server). Doble condición dentro de
+  // downOrphans —bajo WORKTREES_DIR y directorio inexistente— para no tocar nada vivo.
+  if (config.DOCKER_CLEANUP) {
+    downOrphans(config.WORKTREES_DIR)
+      .then((stacks) => { if (stacks.length) console.log(`[habitat] docker: stacks huérfanos bajados: ${stacks.join(', ')}`); })
+      .catch((err) => console.error('[habitat] barrido docker falló (ignorado):', err && err.message));
+  }
 }

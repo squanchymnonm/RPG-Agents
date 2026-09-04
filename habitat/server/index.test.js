@@ -1707,3 +1707,174 @@ test('POST /files/upload: con UPLOAD_PASSWORD el 413 avisa que hay bypass, y la 
   server.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+// --- docker: limpieza de containers de la sesión -------------------------------------
+
+const fakeDocker = (over = {}) => ({ downForDir: async () => [], downOrphans: async () => [], ...over });
+
+test('POST /kill de sesión por rama baja los stacks docker antes de remover el worktree', async () => {
+  const order = [];
+  const seenDocker = [];
+  const tmux = { listSessions: async () => [], newTmuxSession: async () => true, killTmuxSession: async () => true };
+  const git = {
+    findNestedRepos: async () => [],
+    worktreeRemove: async () => { order.push('worktree'); return true; },
+  };
+  const docker = fakeDocker({
+    downForDir: async (dir, opts) => { order.push('docker'); seenDocker.push([dir, opts]); return ['artisano-feature-x']; },
+  });
+  const cfg = spawnConfig({ WORKTREES_DIR: '/home/u/habitat-worktrees', PROJECTS: ['/home/u/Artisano'], DOCKER_CLEANUP: true });
+  const store = createStore();
+  store.upsert(newSession('sid1', {
+    name: 'Artisano', project: 'Artisano', tmux: 'Artisano-feature-x', branch: 'feature/x',
+  }));
+  const { server } = createApp({ config: cfg, store, tmux, git, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/kill`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'sid1' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(seenDocker.length, 1);
+  assert.equal(seenDocker[0][0], '/home/u/habitat-worktrees/Artisano/feature-x');
+  assert.equal(seenDocker[0][1].root, '/home/u/habitat-worktrees');
+  // El docker-compose.yml vive en el worktree: hay que bajar ANTES de borrarlo.
+  assert.deepEqual(order, ['docker', 'worktree']);
+  server.close();
+});
+
+test('POST /kill de sesión plana no toca docker (el stack es del usuario, no de hábitat)', async () => {
+  let called = false;
+  const tmux = { listSessions: async () => [], newTmuxSession: async () => true, killTmuxSession: async () => true };
+  const git = { worktreeRemove: async () => true };
+  const docker = fakeDocker({ downForDir: async () => { called = true; return []; } });
+  const cfg = spawnConfig({ WORKTREES_DIR: '/home/u/habitat-worktrees', DOCKER_CLEANUP: true });
+  const store = createStore();
+  store.upsert(newSession('sid2', { name: 'proj-api', project: 'proj-api', tmux: 'proj-api', branch: 'main' }));
+  const { server } = createApp({ config: cfg, store, tmux, git, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/kill`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'sid2' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(called, false);
+  server.close();
+});
+
+test('POST /kill con DOCKER_CLEANUP off no baja containers', async () => {
+  let called = false;
+  const tmux = { listSessions: async () => [], newTmuxSession: async () => true, killTmuxSession: async () => true };
+  const git = { findNestedRepos: async () => [], worktreeRemove: async () => true };
+  const docker = fakeDocker({ downForDir: async () => { called = true; return []; } });
+  const cfg = spawnConfig({ WORKTREES_DIR: '/home/u/habitat-worktrees', DOCKER_CLEANUP: false });
+  const store = createStore();
+  store.upsert(newSession('sid3', { name: 'p', project: 'p', tmux: 'p-x', branch: 'x' }));
+  const { server } = createApp({ config: cfg, store, tmux, git, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/kill`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'sid3' }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(called, false);
+  server.close();
+});
+
+test('POST /kill sigue devolviendo 200 si docker falla', async () => {
+  const tmux = { listSessions: async () => [], newTmuxSession: async () => true, killTmuxSession: async () => true };
+  const git = { findNestedRepos: async () => [], worktreeRemove: async () => true };
+  const docker = fakeDocker({ downForDir: async () => { throw new Error('daemon caído'); } });
+  const cfg = spawnConfig({ WORKTREES_DIR: '/home/u/habitat-worktrees', DOCKER_CLEANUP: true });
+  const store = createStore();
+  store.upsert(newSession('sid4', { name: 'p', project: 'p', tmux: 'p-x', branch: 'x' }));
+  const { server } = createApp({ config: cfg, store, tmux, git, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/kill`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'sid4' }),
+  });
+  assert.equal(r.status, 200);
+  server.close();
+});
+
+test('GET /docker/status lista los stacks de la sesión sin bajarlos', async () => {
+  const seen = [];
+  const docker = fakeDocker({ downForDir: async (dir, opts) => { seen.push([dir, opts]); return ['artisano-x']; } });
+  const store = createStore();
+  store.upsert(newSession('sid1', { name: 'Artisano', project: 'Artisano', tmux: 'Artisano-x', branch: 'x' }));
+  const { server } = createApp({ config: spawnConfig(), store, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/docker/status?id=sid1`, { headers: auth });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { stacks: ['artisano-x'] });
+  assert.equal(seen[0][0], '/home/u/habitat-worktrees/Artisano/x');
+  assert.equal(seen[0][1].dryRun, true);
+  server.close();
+});
+
+test('GET /docker/status de sesión plana -> stacks vacío sin consultar docker', async () => {
+  let called = false;
+  const docker = fakeDocker({ downForDir: async () => { called = true; return ['x']; } });
+  const store = createStore();
+  store.upsert(newSession('sid2', { name: 'p', project: 'p', tmux: 'p', branch: 'main' }));
+  const { server } = createApp({ config: spawnConfig(), store, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/docker/status?id=sid2`, { headers: auth });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { stacks: [] });
+  assert.equal(called, false);
+  server.close();
+});
+
+test('POST /docker/down baja los stacks de la sesión y devuelve los nombres', async () => {
+  const seen = [];
+  const docker = fakeDocker({ downForDir: async (dir, opts) => { seen.push([dir, opts]); return ['a', 'b']; } });
+  const store = createStore();
+  store.upsert(newSession('sid1', { name: 'Artisano', project: 'Artisano', tmux: 'Artisano-x', branch: 'x' }));
+  const { server } = createApp({ config: spawnConfig(), store, docker });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/docker/down`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'sid1' }),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { stacks: ['a', 'b'] });
+  assert.equal(seen[0][1].dryRun, false);
+  server.close();
+});
+
+test('POST /docker/down id desconocido -> 404', async () => {
+  const { server } = createApp({ config: spawnConfig(), store: createStore(), docker: fakeDocker() });
+  const port = await listen(server);
+  const r = await fetch(`http://127.0.0.1:${port}/docker/down`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'nope' }),
+  });
+  assert.equal(r.status, 404);
+  server.close();
+});
+
+test('docker endpoints sin ALLOW_SPAWN -> 403', async () => {
+  const { server } = createApp({ config, store: createStore(), docker: fakeDocker() });
+  const port = await listen(server);
+  const a = await fetch(`http://127.0.0.1:${port}/docker/status?id=x`, { headers: auth });
+  const b = await fetch(`http://127.0.0.1:${port}/docker/down`, {
+    method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ id: 'x' }),
+  });
+  assert.equal(a.status, 403);
+  assert.equal(b.status, 403);
+  server.close();
+});
+
+test('docker endpoints sin token -> 401', async () => {
+  const { server } = createApp({ config: spawnConfig(), store: createStore(), docker: fakeDocker() });
+  const port = await listen(server);
+  const a = await fetch(`http://127.0.0.1:${port}/docker/status?id=x`);
+  const b = await fetch(`http://127.0.0.1:${port}/docker/down`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'x' }),
+  });
+  assert.equal(a.status, 401);
+  assert.equal(b.status, 401);
+  server.close();
+});
