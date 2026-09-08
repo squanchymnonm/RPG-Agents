@@ -10,6 +10,7 @@ import { STATUS_LABEL, type FightResult } from '../types'
 import { faceFor, ago, fmt } from '../sprites'
 import { useTerminal, canReadClipboard } from '../composables/useTerminal'
 import { useProjects } from '../composables/useProjects'
+import { useCompactPods } from '../composables/useCompactPods'
 import { createLongPress } from '../composables/longPress'
 import TermKeys from './TermKeys.vue'
 import { useTermKeys } from '../composables/useTermKeys'
@@ -21,6 +22,7 @@ const termEl = ref<HTMLElement | null>(null)
 const { fit, insert, getSelection, copySelection, pasteClipboard, copyVisible, selectMode, sendKey } =
   useTerminal(termEl, selectedId, { onCopied: flashCopied })
 const { enabled: termKeysEnabled } = useTermKeys()
+const { compact } = useCompactPods()
 // En contexto inseguro (HTTP/LAN) no se puede leer el portapapeles desde un click:
 // el botón "Pegar" se deshabilita y el usuario pega con Ctrl+V (evento nativo).
 const canPaste = canReadClipboard()
@@ -135,6 +137,8 @@ watch(
 )
 
 const bagSrc = '/assets/ui/bag.png'
+const scrollSrc = '/assets/ui/scroll.png'
+const crateSrc = '/assets/ui/crate.png'
 
 defineExpose({ fit })
 </script>
@@ -142,7 +146,7 @@ defineExpose({ fit })
 <template>
   <div class="dpanel">
     <template v-if="store.selected">
-      <div class="dhead" :style="headTint">
+      <div class="dhead" :class="{ compact }" :style="headTint">
         <div class="portrait">
           <i class="rivet tl"></i><i class="rivet tr"></i><i class="rivet bl"></i><i class="rivet br"></i>
           <div class="well"><img class="face" :src="faceFor(store.selected.name, store.selected.char)" alt="" /></div>
@@ -154,23 +158,24 @@ defineExpose({ fit })
           <div class="since">activa hace {{ ago(store.selected.since) }}</div>
         </div>
         <div class="dtools">
-          <button class="tool" @click="bookOpen = !bookOpen" title="Quest Book"><img src="/assets/ui/book.png" alt="" />Quest Book</button>
-          <button class="tool" @click="filesOpen = !filesOpen" title="Archivos"><img :src="bagSrc" alt="" />Archivos</button>
-          <button class="tool" @click="openProject('git')" title="Cambios git">⌥ Cambios</button>
-          <button class="tool" @click="openProject('files')" title="Explorador de proyecto">🗂 Proyecto</button>
+          <button class="tool" @click="bookOpen = !bookOpen" title="Quest Book"><img src="/assets/ui/book.png" alt="" /><span class="lbl">Quest Book</span></button>
+          <button class="tool" @click="filesOpen = !filesOpen" title="Archivos"><img :src="bagSrc" alt="" /><span class="lbl">Archivos</span></button>
+          <button class="tool" @click="openProject('git')" title="Cambios git"><img :src="scrollSrc" alt="" /><span class="lbl">Cambios</span></button>
+          <button class="tool" @click="openProject('files')" title="Explorador de proyecto"><img :src="crateSrc" alt="" /><span class="lbl">Proyecto</span></button>
           <button
             v-if="canSpawn && dockerStacks.length"
             class="tool"
             :disabled="dockerBusy"
             :title="`Bajar containers: ${dockerStacks.join(', ')}`"
             @click="downDocker"
-          >🐳 {{ dockerBusy ? 'Bajando…' : `Bajar docker (${dockerStacks.length})` }}</button>
-          <button v-if="canSpawn" class="tool danger" @click="closeSession">✕ Cerrar</button>
+          ><span class="ic">🐳</span><span class="lbl">{{ dockerBusy ? 'Bajando…' : `Bajar docker (${dockerStacks.length})` }}</span></button>
+          <button v-if="canSpawn" class="tool danger" @click="closeSession"><span class="ic">✕</span><span class="lbl">Cerrar</span></button>
         </div>
       </div>
       <div class="term" :class="{ selecting: selectMode }">
         <div class="term-bar">
           <span class="tt"><b>{{ store.selected.project }}</b><span v-if="store.selected.branch"> · {{ store.selected.branch }}</span> · tmux</span>
+          <TermKeys v-if="termKeysEnabled" dense @press="sendKey" />
           <button
             class="termbtn"
             :class="{ on: selectMode }"
@@ -181,7 +186,6 @@ defineExpose({ fit })
           <button class="termbtn" @click="onCopyVisible" title="Copiar todo lo visible">copiar visible</button>
           <span class="live"><span class="d"></span> en vivo</span>
         </div>
-        <div v-if="termKeysEnabled" class="term-keys-row"><TermKeys @press="sendKey" /></div>
         <div
           ref="termEl"
           class="term-body"
@@ -226,6 +230,7 @@ defineExpose({ fit })
   height: 100%;
   min-height: 0;
   padding: 16px clamp(14px, 1.8vw, 22px) 22px;
+  container-type: inline-size;
 }
 
 /* ===== Header card ===== */
@@ -238,6 +243,29 @@ defineExpose({ fit })
   background: linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
   border: 1px solid var(--color-edge);
   box-shadow: var(--shadow-sh1);
+}
+
+/* ===== Card fina: modo compacto en horizontal =====
+   En tablet apaisada la cabecera se lleva ~120px que la terminal necesita.
+   Sin medallón, sin acción ni "activa hace": nombre, estado, repo y botones
+   en una sola fila. En portrait o sin compacto la card queda como siempre. */
+@media (orientation: landscape) {
+  .dhead.compact { gap: 12px; padding: 7px 11px; }
+  .dhead.compact .portrait,
+  .dhead.compact .action,
+  .dhead.compact .since { display: none; }
+  .dhead.compact .dinfo { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+  .dhead.compact .dname { flex: 0 0 auto; font-size: 16px; gap: 8px; }
+  .dhead.compact .repo { flex: 0 1 auto; min-width: 0; margin-top: 0; }
+  .dhead.compact .dtools { flex: 0 0 auto; align-self: center; }
+  /* Con el panel angosto (zoom alto o rail ancho) el repo se va antes de que
+     los botones lleguen a pisar el chip de estado. */
+  @container (max-width: 780px) {
+    .dhead.compact .repo { display: none; }
+  }
+  .dhead.compact .tool { gap: 5px; padding: 5px 9px; font-size: 11.5px; }
+  .dhead.compact .tool img { width: 14px; height: 14px; }
+  .dhead.compact + .term { margin-top: 9px; }
 }
 
 /* ===== Brass medallion portrait ===== */
@@ -379,8 +407,13 @@ defineExpose({ fit })
 /* ===== Tools ===== */
 .dtools {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
   align-self: flex-start;
+}
+@container (max-width: 780px) {
+  .dtools .tool .lbl { display: none; }
+  .dtools .tool { padding: 6px 9px; }
 }
 .tool {
   display: inline-flex;
@@ -397,7 +430,11 @@ defineExpose({ fit })
   transition: .15s;
 }
 .tool:hover { border-color: var(--color-brass-2); color: var(--color-brass); }
-.tool img { width: 16px; height: 16px; image-rendering: pixelated; }
+/* object-fit: no todos los sprites del pack son cuadrados (el cajón es 16×15). */
+.tool img { width: 16px; height: 16px; object-fit: contain; image-rendering: pixelated; }
+/* Los tools que siguen con glifo (docker, cerrar) ocupan lo mismo que un sprite,
+   así los botones sólo-ícono quedan todos del mismo ancho. */
+.tool .ic { display: inline-block; width: 16px; text-align: center; font-size: 13px; line-height: 1; }
 .tool.danger:hover { border-color: var(--color-crimson); color: var(--color-crimson); }
 .tool:disabled { opacity: .55; cursor: default; border-color: var(--color-edge); color: var(--color-ink-2); }
 
@@ -418,6 +455,9 @@ defineExpose({ fit })
 .term-bar {
   display: flex;
   align-items: center;
+  /* nowrap a propósito: con wrap el navegador manda el chip "en vivo" a un
+     segundo renglón en vez de encoger el título. Acá el que cede es el título. */
+  flex-wrap: nowrap;
   gap: 10px;
   padding: 9px 14px;
   border-bottom: 1px solid var(--color-edge);
@@ -425,12 +465,25 @@ defineExpose({ fit })
   flex-shrink: 0;
 }
 .term-bar .tt {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   color: var(--color-dim);
 }
 .term-bar .tt b { color: var(--color-ink-2); }
+@container (max-width: 700px) {
+  .term-bar .tt { display: none; }
+}
+@container (max-width: 540px) {
+  .term-bar .live { display: none; }
+}
 .term-bar .live {
+  flex: 0 0 auto;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -461,6 +514,8 @@ defineExpose({ fit })
   touch-action: none;
 }
 .termbtn {
+  flex: 0 0 auto;
+  white-space: nowrap;
   background: var(--color-surface-2);
   border: 1px solid var(--color-edge);
   color: var(--color-ink-2);
@@ -473,7 +528,6 @@ defineExpose({ fit })
 .termbtn:hover { border-color: var(--color-brass-2); color: var(--color-brass); }
 .termbtn.on { border-color: var(--color-brass); color: var(--color-brass); background: rgba(224,169,75,.12); }
 .term.selecting .term-body { cursor: crosshair; }
-.term-keys-row { padding: 5px 6px; border-top: 1px solid var(--color-line); }
 /* La barra ya empuja .live a la derecha con margin-left:auto en el primer botón del grupo. */
 .copied-toast {
   position: absolute;
