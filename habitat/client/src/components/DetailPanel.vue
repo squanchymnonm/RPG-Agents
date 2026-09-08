@@ -137,6 +137,8 @@ watch(
 )
 
 const bagSrc = '/assets/ui/bag.png'
+const scrollSrc = '/assets/ui/scroll.png'
+const crateSrc = '/assets/ui/crate.png'
 
 defineExpose({ fit })
 </script>
@@ -158,8 +160,8 @@ defineExpose({ fit })
         <div class="dtools">
           <button class="tool" @click="bookOpen = !bookOpen" title="Quest Book"><img src="/assets/ui/book.png" alt="" /><span class="lbl">Quest Book</span></button>
           <button class="tool" @click="filesOpen = !filesOpen" title="Archivos"><img :src="bagSrc" alt="" /><span class="lbl">Archivos</span></button>
-          <button class="tool" @click="openProject('git')" title="Cambios git"><span class="ic">⌥</span><span class="lbl">Cambios</span></button>
-          <button class="tool" @click="openProject('files')" title="Explorador de proyecto"><span class="ic">🗂</span><span class="lbl">Proyecto</span></button>
+          <button class="tool" @click="openProject('git')" title="Cambios git"><img :src="scrollSrc" alt="" /><span class="lbl">Cambios</span></button>
+          <button class="tool" @click="openProject('files')" title="Explorador de proyecto"><img :src="crateSrc" alt="" /><span class="lbl">Proyecto</span></button>
           <button
             v-if="canSpawn && dockerStacks.length"
             class="tool"
@@ -428,7 +430,11 @@ defineExpose({ fit })
   transition: .15s;
 }
 .tool:hover { border-color: var(--color-brass-2); color: var(--color-brass); }
-.tool img { width: 16px; height: 16px; image-rendering: pixelated; }
+/* object-fit: no todos los sprites del pack son cuadrados (el cajón es 16×15). */
+.tool img { width: 16px; height: 16px; object-fit: contain; image-rendering: pixelated; }
+/* Los tools que siguen con glifo (docker, cerrar) ocupan lo mismo que un sprite,
+   así los botones sólo-ícono quedan todos del mismo ancho. */
+.tool .ic { display: inline-block; width: 16px; text-align: center; font-size: 13px; line-height: 1; }
 .tool.danger:hover { border-color: var(--color-crimson); color: var(--color-crimson); }
 .tool:disabled { opacity: .55; cursor: default; border-color: var(--color-edge); color: var(--color-ink-2); }
 
