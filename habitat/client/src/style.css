@@ -19,7 +19,9 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
-  #app{display:flex; flex-direction:column; height:100dvh; overflow:hidden}
+  /* Alto compensado por el zoom de UI (ver useZoom): `zoom` no afecta a las
+     unidades de viewport, así que sin dividir la app no llena la pantalla. */
+  #app{display:flex; flex-direction:column; height:calc(100dvh / var(--zoom, 1)); overflow:hidden}
   body{
     font-family:var(--f-body); color:var(--ink); font-size:15px;
     letter-spacing:0;

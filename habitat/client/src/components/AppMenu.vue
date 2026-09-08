@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useAuth } from '../composables/useAuth'
 import { useCompactPods } from '../composables/useCompactPods'
+import { useZoom } from '../composables/useZoom'
 
 type View = 'sessions' | 'settings'
 defineProps<{ view: View }>()
@@ -11,6 +12,7 @@ const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 const { logout } = useAuth()
 const { compact, toggleCompact } = useCompactPods()
+const { zoomPct, zoomIn, zoomOut, resetZoom, canZoomIn, canZoomOut } = useZoom()
 
 function pickView(v: View) { emit('update:view', v); open.value = false }
 function onDocClick(e: MouseEvent) {
@@ -35,6 +37,12 @@ onUnmounted(() => {
       <button class="mi" :class="{ active: view === 'sessions' }" @click="pickView('sessions')">Sesiones</button>
       <button class="mi" :class="{ active: view === 'settings' }" @click="pickView('settings')">⚙ Ajustes</button>
       <button class="mi" :class="{ active: compact }" @click="toggleCompact" title="Pods compactos">▭ Compacto</button>
+      <div class="zoom-row">
+        <span class="zl">Zoom</span>
+        <button class="zb" :disabled="!canZoomOut" @click="zoomOut" aria-label="Alejar">−</button>
+        <button class="zv" @click="resetZoom" title="Volver a 100%">{{ zoomPct }}%</button>
+        <button class="zb" :disabled="!canZoomIn" @click="zoomIn" aria-label="Acercar">+</button>
+      </div>
       <button class="mi" @click="logout">Salir</button>
     </div>
   </div>
@@ -56,4 +64,14 @@ onUnmounted(() => {
   background:var(--color-surface-2); color:var(--color-ink); border:1px solid var(--color-edge); }
 .mi:hover{ border-color:var(--color-brass-2); color:var(--color-brass); }
 .mi.active{ background:var(--color-brass); color:#2a1c0a; border-color:var(--color-brass); }
+.zoom-row{ display:flex; align-items:center; gap:6px; padding:6px 8px 6px 11px;
+  border-radius:8px; font-size:13px; background:var(--color-surface-2);
+  border:1px solid var(--color-edge); color:var(--color-ink); }
+.zoom-row .zl{ margin-right:auto; color:var(--color-dim); }
+.zoom-row .zb, .zoom-row .zv{ background:var(--color-raise); color:var(--color-ink);
+  border:1px solid var(--color-edge); border-radius:7px; cursor:pointer; line-height:1; }
+.zoom-row .zb{ width:34px; height:32px; font-size:18px; }
+.zoom-row .zv{ min-width:56px; height:32px; font-size:12px; font-variant-numeric:tabular-nums; }
+.zoom-row .zb:hover:not(:disabled), .zoom-row .zv:hover{ border-color:var(--color-brass-2); color:var(--color-brass); }
+.zoom-row .zb:disabled{ opacity:.4; cursor:default; }
 </style>

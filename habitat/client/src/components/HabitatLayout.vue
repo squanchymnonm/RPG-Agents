@@ -3,12 +3,14 @@ import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useSessions } from '../stores/sessions'
 import { useViewport } from '../composables/useViewport'
 import { useCompactPods } from '../composables/useCompactPods'
+import { useZoom } from '../composables/useZoom'
 import SessionRail from './SessionRail.vue'
 import DetailPanel from './DetailPanel.vue'
 
 const store = useSessions()
 const { isNarrow } = useViewport()
 const { compact } = useCompactPods()
+const { zoom } = useZoom()
 const panel = ref<InstanceType<typeof DetailPanel> | null>(null)
 
 // Ancho del rail (px), persistido. En modo compacto usamos una clave y un
@@ -49,6 +51,9 @@ function closeOverlay() { mobileOpen.value = false }
 function refit() { nextTick(() => requestAnimationFrame(() => panel.value?.fit())) }
 watch(isNarrow, refit)
 watch(compact, refit)
+// Cambiar `zoom` en el root NO dispara el evento resize del window: la terminal
+// se re-fitea a mano para recalcular filas y columnas.
+watch(zoom, refit)
 function onResize() { refit() }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && isNarrow.value && mobileOpen.value) closeOverlay() }
 let mqOrient: MediaQueryList | null = null
